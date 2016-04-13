@@ -133,20 +133,20 @@ Status ParseProxy(const base::Value& option, Capabilities* capabilities) {
   std::string proxy_type;
   if (!proxy_dict->GetString("proxyType", &proxy_type))
     return Status(kUnknownError, "'proxyType' must be a string");
-  proxy_type = base::StringToLowerASCII(proxy_type);
+  proxy_type = base::ToLowerASCII(proxy_type);
   if (proxy_type == "direct") {
     capabilities->switches.SetSwitch("no-proxy-server");
   } else if (proxy_type == "system") {
     // Xwalk default.
   } else if (proxy_type == "pac") {
-    CommandLine::StringType proxy_pac_url;
+    base::CommandLine::StringType proxy_pac_url;
     if (!proxy_dict->GetString("proxyAutoconfigUrl", &proxy_pac_url))
       return Status(kUnknownError, "'proxyAutoconfigUrl' must be a string");
     capabilities->switches.SetSwitch("proxy-pac-url", proxy_pac_url);
   } else if (proxy_type == "autodetect") {
     capabilities->switches.SetSwitch("proxy-auto-detect");
   } else if (proxy_type == "manual") {
-    const char* proxy_servers_options[][2] = {
+    const char* const proxy_servers_options[][2] = {
         {"ftpProxy", "ftp"}, {"httpProxy", "http"}, {"sslProxy", "https"}};
     const base::Value* option_value = NULL;
     std::string proxy_servers;
@@ -216,8 +216,8 @@ Status ParseUseExistingBrowser(const base::Value& option,
   if (!option.GetAsString(&server_addr))
     return Status(kUnknownError, "must be 'host:port'");
 
-  std::vector<std::string> values;
-  base::SplitString(server_addr, ':', &values);
+  std::vector<std::string> values = base::SplitString(
+      server_addr, ":", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
   if (values.size() != 2)
     return Status(kUnknownError, "must be 'host:port'");
 
@@ -340,7 +340,7 @@ void Switches::SetSwitch(const std::string& name, const base::string16& value) {
 #if defined(OS_WIN)
   switch_map_[name] = value;
 #else
-  SetSwitch(name, UTF16ToUTF8(value));
+  SetSwitch(name, base::UTF16ToUTF8(value));
 #endif
 }
 
@@ -400,7 +400,7 @@ size_t Switches::GetSize() const {
   return switch_map_.size();
 }
 
-void Switches::AppendToCommandLine(CommandLine* command) const {
+void Switches::AppendToCommandLine(base::CommandLine* command) const {
   for (SwitchMap::const_iterator iter = switch_map_.begin();
        iter != switch_map_.end();
        ++iter) {

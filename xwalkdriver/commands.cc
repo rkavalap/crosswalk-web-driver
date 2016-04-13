@@ -13,10 +13,11 @@
 #include "base/logging.h"
 #include "base/memory/linked_ptr.h"
 #include "base/message_loop/message_loop.h"
-#include "base/message_loop/message_loop_proxy.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/sys_info.h"
+#include "base/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "xwalk/test/xwalkdriver/capabilities.h"
 #include "xwalk/test/xwalkdriver/logging.h"
@@ -55,7 +56,7 @@ void ExecuteCreateSession(
   if (new_id.empty())
     new_id = GenerateId();
   scoped_ptr<Session> session(new Session(new_id));
-  scoped_ptr<base::Thread> thread(new base::Thread(new_id.c_str()));
+  scoped_ptr<base::Thread> thread(new base::Thread(new_id));
   if (!thread->Start()) {
     callback.Run(
         Status(kUnknownError, "failed to start a thread for the new session"),
@@ -64,7 +65,7 @@ void ExecuteCreateSession(
     return;
   }
 
-  thread->message_loop()->PostTask(
+  thread->task_runner()->PostTask(
       FROM_HERE, base::Bind(&SetThreadLocalSession, base::Passed(&session)));
   session_thread_map
       ->insert(std::make_pair(new_id, make_linked_ptr(thread.release())));
@@ -111,7 +112,7 @@ void ExecuteQuitAll(
                                 weak_ptr_factory.GetWeakPtr(),
                                 run_loop.QuitClosure()));
   }
-  base::MessageLoop::current()->PostDelayedTask(
+  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE, run_loop.QuitClosure(), base::TimeDelta::FromSeconds(10));
   // Uses a nested run loop to block this thread until all the quit
   // commands have executed, or the timeout expires.
@@ -220,14 +221,14 @@ void ExecuteSessionCommand(
     Status status(return_ok_without_session ? kOk : kNoSuchSession);
     callback.Run(status, scoped_ptr<base::Value>(), session_id);
   } else {
-    iter->second->message_loop()
+    iter->second->task_runner()
         ->PostTask(FROM_HERE,
                    base::Bind(&ExecuteSessionCommandOnSessionThread,
                               command_name,
                               command,
                               return_ok_without_session,
                               base::Passed(make_scoped_ptr(params.DeepCopy())),
-                              base::MessageLoopProxy::current(),
+                              base::ThreadTaskRunnerHandle::Get(),
                               callback,
                               base::Bind(&TerminateSessionThreadOnCommandThread,
                                          session_thread_map,

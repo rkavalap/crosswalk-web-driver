@@ -98,7 +98,7 @@ void DeviceManager::ReleaseDevice(const std::string& device_serial) {
 
 Device* DeviceManager::LockDevice(const std::string& device_serial) {
   active_devices_.push_back(device_serial);
-  std::string os_name = base::StringToLowerASCII(
+  std::string os_name = base::ToLowerASCII(
                             device_bridge_.get()->GetOperatingSystemName());
 
   if (os_name.find("android") != std::string::npos)

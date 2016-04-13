@@ -31,18 +31,18 @@ class NavigationTracker : public DevToolsEventListener {
 
   explicit NavigationTracker(DevToolsClient* client);
   NavigationTracker(DevToolsClient* client, LoadingState known_state);
-  virtual ~NavigationTracker();
+  ~NavigationTracker() override;
 
   // Gets whether a navigation is pending for the specified frame. |frame_id|
   // may be empty to signify the main frame.
   Status IsPendingNavigation(const std::string& frame_id, bool* is_pending);
 
   // Overridden from DevToolsEventListener:
-  virtual Status OnConnected(DevToolsClient* client) override;
-  virtual Status OnEvent(DevToolsClient* client,
+  Status OnConnected(DevToolsClient* client) override;
+  Status OnEvent(DevToolsClient* client,
                          const std::string& method,
                          const base::DictionaryValue& params) override;
-  virtual Status OnCommandSuccess(DevToolsClient* client,
+  Status OnCommandSuccess(DevToolsClient* client,
                                   const std::string& method) override;
 
  private:

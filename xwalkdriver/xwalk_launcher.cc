@@ -10,6 +10,7 @@
 
 #include "base/base64.h"
 #include "base/basictypes.h"
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -20,6 +21,7 @@
 #include "base/logging.h"
 #include "base/process/kill.h"
 #include "base/process/launch.h"
+#include "base/process/process.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -59,7 +61,7 @@ const char* kCommonSwitches[] = {
 
 Status PrepareCommandLine(int port,
                           const Capabilities& capabilities,
-                          CommandLine* prepared_command,
+                          base::CommandLine* prepared_command,
                           base::ScopedTempDir* user_data_dir,
                           base::ScopedTempDir* extension_dir,
                           std::vector<std::string>* extension_bg_pages) {
@@ -72,16 +74,13 @@ Status PrepareCommandLine(int port,
                   base::StringPrintf("no xwalk binary at %" PRFilePath,
                                      program.value().c_str()));
   }
-  CommandLine command(program);
+  base::CommandLine command(program);
   Switches switches;
 
   switches.SetSwitch("remote-debugging-port", base::IntToString(port));
 
-  for (std::set<std::string>::const_iterator iter =
-           capabilities.exclude_switches.begin();
-       iter != capabilities.exclude_switches.end();
-       ++iter) {
-    switches.RemoveSwitch(*iter);
+  for (const auto& excluded_switch : capabilities.exclude_switches) {
+    switches.RemoveSwitch(excluded_switch);
   }
   switches.SetFromSwitches(capabilities.switches);
 
@@ -99,7 +98,7 @@ Status WaitForDevToolsAndCheckVersion(
   scoped_ptr<DevToolsHttpClient> client(new DevToolsHttpClient(
       address, context_getter, socket_factory));
   base::TimeTicks deadline =
-      base::TimeTicks::Now() + base::TimeDelta::FromSeconds(20);
+      base::TimeTicks::Now() + base::TimeDelta::FromSeconds(60);
   Status status = client->Init(deadline - base::TimeTicks::Now());
   if (status.IsError())
     return status;
@@ -151,7 +150,7 @@ Status LaunchDesktopXwalk(
     const Capabilities& capabilities,
     ScopedVector<DevToolsEventListener>& devtools_event_listeners,
     scoped_ptr<Xwalk>* xwalk) {
-  CommandLine command(CommandLine::NO_PROGRAM);
+  base::CommandLine command(base::CommandLine::NO_PROGRAM);
   base::ScopedTempDir user_data_dir;
   base::ScopedTempDir extension_dir;
   std::vector<std::string> extension_bg_pages;
@@ -178,7 +177,7 @@ Status LaunchDesktopXwalk(
   base::ScopedFD devnull;
   //int devnull = -1;
   //base::ScopedFD scoped_devnull(&devnull);
-  if (!CommandLine::ForCurrentProcess()->HasSwitch("verbose")) {
+  if (!base::CommandLine::ForCurrentProcess()->HasSwitch("verbose")) {
     // Redirect stderr to /dev/null, so that Xwalk log spew doesn't confuse
     // users.
     //devnull = open("/dev/null", O_WRONLY);
@@ -197,8 +196,8 @@ Status LaunchDesktopXwalk(
   std::string command_string = command.GetCommandLineString();
 #endif
   VLOG(0) << "Launching xwalk: " << command_string;
-  base::ProcessHandle process;
-  if (!base::LaunchProcess(command, options, &process))
+  base::Process process = base::LaunchProcess(command, options);
+  if (!process.IsValid())
     return Status(kUnknownError, "xwalk failed to start");
 
   scoped_ptr<DevToolsHttpClient> devtools_client;
@@ -208,7 +207,7 @@ Status LaunchDesktopXwalk(
   if (status.IsError()) {
     int exit_code;
     base::TerminationStatus xwalk_status =
-        base::GetTerminationStatus(process, &exit_code);
+        base::GetTerminationStatus(process.Handle(), &exit_code);
     if (xwalk_status != base::TERMINATION_STATUS_STILL_RUNNING) {
       std::string termination_reason;
       switch (xwalk_status) {
@@ -231,9 +230,9 @@ Status LaunchDesktopXwalk(
       return Status(kUnknownError,
                     "Xwalk failed to start: " + termination_reason);
     }
-    if (!base::KillProcess(process, 0, true)) {
+    if (!process.Terminate(0, true)) {
       int exit_code;
-      if (base::GetTerminationStatus(process, &exit_code) ==
+      if (base::GetTerminationStatus(process.Handle(), &exit_code) ==
           base::TERMINATION_STATUS_STILL_RUNNING)
         return Status(kUnknownError, "cannot kill Xwalk", status);
     }
@@ -243,7 +242,7 @@ Status LaunchDesktopXwalk(
       new XwalkDesktopImpl(devtools_client.Pass(),
                             devtools_event_listeners,
                             port_reservation.Pass(),
-                            process,
+                            process.Pass(),
                             command,
                             &extension_dir));
   *xwalk = xwalk_desktop.Pass();

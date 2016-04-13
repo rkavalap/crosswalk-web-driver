@@ -12,7 +12,6 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/sync_socket.h"
 #include "net/base/net_errors.h"
-#include "net/base/net_log.h"
 #include "net/base/net_util.h"
 #include "net/base/sys_addrinfo.h"
 #include "net/socket/tcp_server_socket.h"

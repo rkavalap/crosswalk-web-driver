@@ -338,7 +338,7 @@ Status ExecuteSwitchToFrame(
     return Status(kUnknownError, "fail to locate the sub frame element");
 
   std::string xwalk_driver_id = GenerateId();
-  const char* kSetFrameIdentifier =
+  const char kSetFrameIdentifier[] =
       "function(frame, id) {"
       "  frame.setAttribute('cd_frame_id_', id);"
       "}";
@@ -359,7 +359,7 @@ Status ExecuteGetTitle(
     WebView* web_view,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  const char* kGetTitleScript =
+  const char kGetTitleScript[] =
       "function() {"
       "  if (document.title)"
       "    return document.title;"
@@ -375,7 +375,7 @@ Status ExecuteGetPageSource(
     WebView* web_view,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  const char* kGetPageSource =
+  const char kGetPageSource[] =
       "function() {"
       "  return new XMLSerializer().serializeToString(document);"
       "}";

@@ -26,14 +26,14 @@
 
 namespace {
 
-bool KillProcess(base::ProcessHandle process_id) {
+bool KillProcess(const base::Process& process) {
 #if defined(OS_POSIX)
-  kill(process_id, SIGKILL);
+  kill(process.Pid(), SIGKILL);
   base::TimeTicks deadline =
-      base::TimeTicks::Now() + base::TimeDelta::FromSeconds(5);
+      base::TimeTicks::Now() + base::TimeDelta::FromSeconds(30);
   while (base::TimeTicks::Now() < deadline) {
-    pid_t pid = HANDLE_EINTR(waitpid(process_id, NULL, WNOHANG));
-    if (pid == process_id)
+    pid_t pid = HANDLE_EINTR(waitpid(process.Pid(), NULL, WNOHANG));
+    if (pid == process.Pid())
       return true;
     if (pid == -1) {
       if (errno == ECHILD) {
@@ -41,12 +41,19 @@ bool KillProcess(base::ProcessHandle process_id) {
         // the same pid, causing the process state to get cleaned up.
         return true;
       }
-      LOG(WARNING) << "Error waiting for process " << process_id;
+      LOG(WARNING) << "Error waiting for process " << process.Pid();
     }
     base::PlatformThread::Sleep(base::TimeDelta::FromMilliseconds(50));
   }
   return false;
 #endif
+
+  if (!process.Terminate(0, true)) {
+    int exit_code;
+    return base::GetTerminationStatus(process.Handle(), &exit_code) !=
+        base::TERMINATION_STATUS_STILL_RUNNING;
+  }
+  return true;
 }
 
 }  // namespace
@@ -55,13 +62,13 @@ XwalkDesktopImpl::XwalkDesktopImpl(
     scoped_ptr<DevToolsHttpClient> client,
     ScopedVector<DevToolsEventListener>& devtools_event_listeners,
     scoped_ptr<PortReservation> port_reservation,
-    base::ProcessHandle process,
-    const CommandLine& command,
+    base::Process process,
+    const base::CommandLine& command,
     base::ScopedTempDir* extension_dir)
     : XwalkImpl(client.Pass(),
                  devtools_event_listeners,
                  port_reservation.Pass()),
-      process_(process),
+      process_(process.Pass()),
       command_(command) {
   if (extension_dir->IsValid())
     CHECK(extension_dir_.Set(extension_dir->Take()));
@@ -73,7 +80,6 @@ XwalkDesktopImpl::~XwalkDesktopImpl() {
     LOG(WARNING) << "xwalk detaches, take care of directory:"
                  << extension_dir.value();
   }
-  base::CloseProcessHandle(process_);
 }
 
 Status XwalkDesktopImpl::WaitForPageToLoad(const std::string& url,
@@ -127,6 +133,6 @@ Status XwalkDesktopImpl::QuitImpl() {
   return Status(kOk);
 }
 
-const CommandLine& XwalkDesktopImpl::command() const {
+const base::CommandLine& XwalkDesktopImpl::command() const {
   return command_;
 }

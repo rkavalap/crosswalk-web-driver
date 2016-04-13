@@ -19,11 +19,11 @@
 
 namespace {
 
-const char* kInspectorContextError =
+const char kInspectorContextError[] =
     "Execution context with given id not found.";
 
 Status ParseInspectorError(const std::string& error_json) {
-  scoped_ptr<base::Value> error(base::JSONReader::Read(error_json));
+  scoped_ptr<base::Value> error = base::JSONReader::Read(error_json);
   base::DictionaryValue* error_dict;
   if (!error || !error->GetAsDictionary(&error_dict))
     return Status(kUnknownError, "inspector error with no error message");
@@ -431,7 +431,7 @@ bool ParseInspectorMessage(
     InspectorMessageType* type,
     InspectorEvent* event,
     InspectorCommandResponse* command_response) {
-  scoped_ptr<base::Value> message_value(base::JSONReader::Read(message));
+  scoped_ptr<base::Value> message_value = base::JSONReader::Read(message);
   base::DictionaryValue* message_dict;
   if (!message_value || !message_value->GetAsDictionary(&message_dict))
     return false;
@@ -463,7 +463,7 @@ bool ParseInspectorMessage(
     if (unscoped_result)
       command_response->result.reset(unscoped_result->DeepCopy());
     else
-      base::JSONWriter::Write(unscoped_error, &command_response->error);
+      base::JSONWriter::Write(*unscoped_error, &command_response->error);
     return true;
   }
   return false;

@@ -115,8 +115,9 @@ Status DevToolsHttpClient::Init(const base::TimeDelta& timeout) {
 
   std::string stripped_version = devtools_version.substr(prefix.length());
   int temp_build_no;
-  std::vector<std::string> version_parts;
-  base::SplitString(stripped_version, '.', &version_parts);
+  
+  std::vector<base::StringPiece> version_parts = base::SplitStringPiece(
+      stripped_version, ".", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
   if (version_parts.size() != 4 ||
       !base::StringToInt(version_parts[2], &temp_build_no)) {
     return Status(kUnknownError,

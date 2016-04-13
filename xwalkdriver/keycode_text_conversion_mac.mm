@@ -15,15 +15,8 @@
 bool ConvertKeyCodeToText(
     ui::KeyboardCode key_code, int modifiers, std::string* text,
     std::string* error_msg) {
-  int mac_key_code = 0;
-  {
-    unichar character, unmodified_character;
-    mac_key_code = ui::MacKeyCodeForWindowsKeyCode(
-        key_code,
-        0,
-        &character,
-        &unmodified_character);
-  }
+  int mac_key_code =
+      ui::MacKeyCodeForWindowsKeyCode(key_code, 0, nullptr, nullptr);
   *error_msg = std::string();
   if (mac_key_code < 0) {
     *text = std::string();
@@ -63,9 +56,9 @@ bool ConvertKeyCodeToText(
       &char_count,
       &character);
   if (status == noErr && char_count == 1 && !std::iscntrl(character)) {
-    string16 text16;
+    base::string16 text16;
     text16.push_back(character);
-    *text = UTF16ToUTF8(text16);
+    *text = base::UTF16ToUTF8(text16);
     return true;
   }
   *text = std::string();
@@ -73,11 +66,11 @@ bool ConvertKeyCodeToText(
 }
 
 bool ConvertCharToKeyCode(
-    char16 key, ui::KeyboardCode* key_code, int *necessary_modifiers,
+    base::char16 key, ui::KeyboardCode* key_code, int *necessary_modifiers,
     std::string* error_msg) {
-  string16 key_string;
+  base::string16 key_string;
   key_string.push_back(key);
-  std::string key_string_utf8 = UTF16ToUTF8(key_string);
+  std::string key_string_utf8 = base::UTF16ToUTF8(key_string);
   bool found_code = false;
   *error_msg = std::string();
   // There doesn't seem to be a way to get a mac key code for a given unicode

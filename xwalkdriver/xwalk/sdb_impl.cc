@@ -14,6 +14,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_tokenizer.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/time/time.h"
@@ -99,8 +100,9 @@ Status SdbImpl::GetDevices(std::vector<std::string>* devices) {
     return status;
   base::StringTokenizer lines(response, "\n");
   while (lines.GetNext()) {
-    std::vector<std::string> fields;
-    base::SplitStringAlongWhitespace(lines.token(), &fields);
+    std::vector<std::string> fields = base::SplitString(
+        lines.token_piece(), base::kWhitespaceASCII,
+        base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
     // Should not determine the online state by size of field(whitespace counts)
     // since we can't not assume what target hostname outcome looks like.
     // e.g. "<Unknown>", "Tizen IVI 3.0"
@@ -209,17 +211,14 @@ Status SdbImpl::GetPidByName(
   if (!status.IsOk())
     return status;
 
-  std::vector<std::string> lines;
-  base::SplitString(response, '\n', &lines);
-  for (size_t i = 0; i < lines.size(); ++i) {
-    std::string line = lines[i];
-    if (line.empty())
-      continue;
-    std::vector<std::string> tokens;
-    base::SplitStringAlongWhitespace(line, &tokens);
+  for (const base::StringPiece& line : base::SplitString(
+           response, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    std::vector<base::StringPiece> tokens = base::SplitStringPiece(
+        line, base::kWhitespaceASCII,
+        base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
     if (tokens.size() != 9)
       continue;
-    if (tokens[8].compare(process_name) == 0) {
+    if (tokens[8] == process_name) {
       if (base::StringToInt(tokens[1], pid)) {
         return Status(kOk);
       } else {

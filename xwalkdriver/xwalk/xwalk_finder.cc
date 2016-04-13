@@ -22,9 +22,38 @@
 
 namespace {
 
-#if defined(OS_LINUX)
+#if defined(OS_WIN)
+void GetApplicationDirs(std::vector<base::FilePath>* locations) {
+  std::vector<base::FilePath> installation_locations;
+  base::FilePath local_app_data, program_files, program_files_x86;
+  if (PathService::Get(base::DIR_LOCAL_APP_DATA, &local_app_data))
+    installation_locations.push_back(local_app_data);
+  if (PathService::Get(base::DIR_PROGRAM_FILES, &program_files))
+    installation_locations.push_back(program_files);
+  if (PathService::Get(base::DIR_PROGRAM_FILESX86, &program_files_x86))
+    installation_locations.push_back(program_files_x86);
+
+  for (size_t i = 0; i < installation_locations.size(); ++i) {
+    locations->push_back(
+        installation_locations[i].Append(L"Google\\Chrome\\Application"));
+  }
+  for (size_t i = 0; i < installation_locations.size(); ++i) {
+    locations->push_back(
+        installation_locations[i].Append(L"Chromium\\Application"));
+  }
+}
+#elif defined(OS_LINUX)
 void GetApplicationDirs(std::vector<base::FilePath>* locations) {
   locations->push_back(base::FilePath("/opt/crosswalk"));
+  locations->push_back(base::FilePath("/usr/local/bin"));
+  locations->push_back(base::FilePath("/usr/local/sbin"));
+  locations->push_back(base::FilePath("/usr/bin"));
+  locations->push_back(base::FilePath("/usr/sbin"));
+  locations->push_back(base::FilePath("/bin"));
+  locations->push_back(base::FilePath("/sbin"));
+}
+#elif defined(OS_MACOSX)
+void GetApplicationDirs(std::vector<base::FilePath>* locations) {
   locations->push_back(base::FilePath("/usr/local/bin"));
   locations->push_back(base::FilePath("/usr/local/sbin"));
   locations->push_back(base::FilePath("/usr/bin"));
@@ -58,11 +87,11 @@ bool FindExe(
 }  // namespace internal
 
 bool FindXwalk(base::FilePath* browser_exe) {
-#if defined(OS_LINUX)
+
   base::FilePath browser_exes_array[] = {
       base::FilePath("xwalk")
   };
-#endif
+
   std::vector<base::FilePath> browser_exes(
       browser_exes_array, browser_exes_array + arraysize(browser_exes_array));
   base::FilePath module_dir;

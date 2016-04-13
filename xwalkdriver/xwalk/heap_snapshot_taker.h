@@ -24,12 +24,12 @@ class Status;
 class HeapSnapshotTaker: public DevToolsEventListener {
  public:
   explicit HeapSnapshotTaker(DevToolsClient* client);
-  virtual ~HeapSnapshotTaker();
+  ~HeapSnapshotTaker() override;
 
   Status TakeSnapshot(scoped_ptr<base::Value>* snapshot);
 
   // Overridden from DevToolsEventListener:
-  virtual Status OnEvent(DevToolsClient* client,
+  Status OnEvent(DevToolsClient* client,
                          const std::string& method,
                          const base::DictionaryValue& params) override;
 

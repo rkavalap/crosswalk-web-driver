@@ -12,7 +12,6 @@
 #include "base/files/file_util.h"
 #include "base/logging.h"  // For CHECK macros.
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop_proxy.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/values.h"

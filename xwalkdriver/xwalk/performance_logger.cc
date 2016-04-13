@@ -23,7 +23,7 @@ const char* const kDomainEnableCommands[] = {
 // Returns whether the event belongs to one of kDomains.
 bool ShouldLogEvent(const std::string& method) {
   for (size_t i_domain = 0; i_domain < arraysize(kDomains); ++i_domain) {
-    if (StartsWithASCII(method, kDomains[i_domain], true /* case_sensitive */))
+    if (base::StartsWith(method, kDomains[i_domain], base::CompareCase::SENSITIVE /* case_sensitive */))
       return true;
   }
   return false;
@@ -58,7 +58,7 @@ Status PerformanceLogger::OnEvent(
   std::string log_message_json;
   // TODO(klm): extract timestamp from params?
   // Look at where it is for Page, Network, Timeline events.
-  base::JSONWriter::Write(&log_message_dict, &log_message_json);
+  base::JSONWriter::Write(log_message_dict, &log_message_json);
 
   log_->AddEntry(Log::kInfo, log_message_json);
   return Status(kOk);

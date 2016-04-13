@@ -149,7 +149,8 @@ Status WebViewImpl::HandleReceivedEvents() {
 Status WebViewImpl::Load(const std::string& url) {
   // Javascript URLs will cause a hang while waiting for the page to stop
   // loading, so just disallow.
-  if (StartsWithASCII(url, "javascript:", false))
+  if (base::StartsWith(url, "javascript:",
+                       base::CompareCase::INSENSITIVE_ASCII))
     return Status(kUnknownError, "unsupported protocol");
   base::DictionaryValue params;
   params.SetString("url", url);
@@ -179,7 +180,7 @@ Status WebViewImpl::CallFunction(const std::string& frame,
                                  const base::ListValue& args,
                                  scoped_ptr<base::Value>* result) {
   std::string json;
-  base::JSONWriter::Write(&args, &json);
+  base::JSONWriter::Write(args, &json);
   // TODO(zachconrad): Second null should be array of shadow host ids.
   std::string expression = base::StringPrintf(
       "(%s).apply(null, [null, %s, %s])",
@@ -567,7 +568,7 @@ Status EvaluateScriptAndGetValue(DevToolsClient* client,
     return Status(kUnknownError, "Runtime.evaluate missing string 'type'");
 
   if (type == "undefined") {
-    result->reset(base::Value::CreateNullValue());
+    *result = base::Value::CreateNullValue();
   } else {
     base::Value* value;
     if (!temp_result->Get("value", &value))
@@ -608,7 +609,7 @@ Status GetNodeIdFromFunction(DevToolsClient* client,
                              bool* found_node,
                              int* node_id) {
   std::string json;
-  base::JSONWriter::Write(&args, &json);
+  base::JSONWriter::Write(args, &json);
   // TODO(zachconrad): Second null should be array of shadow host ids.
   std::string expression = base::StringPrintf(
       "(%s).apply(null, [null, %s, %s, true])",

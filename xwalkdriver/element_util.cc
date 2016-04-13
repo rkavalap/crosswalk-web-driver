@@ -275,7 +275,8 @@ Status FindElement(
 
     if (base::TimeTicks::Now() - start_time >= session->implicit_wait) {
       if (only_one) {
-        return Status(kNoSuchElement);
+        return Status(kNoSuchElement, "Unable to locate element: {\"method\":\""
+         + strategy + "\",\"selector\":\"" + target + "\"}");
       } else {
         value->reset(new base::ListValue());
         return Status(kOk);
@@ -341,7 +342,7 @@ Status IsElementAttributeEqualToIgnoreCase(
     return status;
   std::string actual_value;
   if (result->GetAsString(&actual_value))
-    *is_equal = LowerCaseEqualsASCII(actual_value, attribute_value.c_str());
+    *is_equal = base::LowerCaseEqualsASCII(actual_value, attribute_value.c_str());
   else
     *is_equal = false;
   return status;
@@ -359,7 +360,7 @@ Status GetElementClickableLocation(
   std::string target_element_id = element_id;
   if (tag_name == "area") {
     // Scroll the image into view instead of the area.
-    const char* kGetImageElementForArea =
+    const char kGetImageElementForArea[] =
         "function (element) {"
         "  var map = element.parentElement;"
         "  if (map.tagName.toLowerCase() != 'map')"
@@ -605,7 +606,7 @@ Status ScrollElementRegionIntoView(
       center, clickable_element_id, &region_offset);
   if (status.IsError())
     return status;
-  const char* kFindSubFrameScript =
+  const char kFindSubFrameScript[] =
       "function(xpath) {"
       "  return document.evaluate(xpath, document, null,"
       "      XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;"

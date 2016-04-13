@@ -73,21 +73,6 @@ Status SendKeysToElement(
   return SendKeysOnWindow(web_view, key_list, true, &session->sticky_modifiers);
 }
 
-Status ExecuteTouchSingleTapAtom(
-    Session* session,
-    WebView* web_view,
-    const std::string& element_id,
-    const base::DictionaryValue& params,
-    scoped_ptr<base::Value>* value) {
-  base::ListValue args;
-  args.Append(CreateElement(element_id));
-  return web_view->CallFunction(
-      session->GetCurrentFrameId(),
-      webdriver::atoms::asString(webdriver::atoms::TOUCH_SINGLE_TAP),
-      args,
-      value);
-}
-
 }  // namespace
 
 Status ExecuteElementCommand(
@@ -198,10 +183,6 @@ Status ExecuteTouchSingleTap(
     const std::string& element_id,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  // Fall back to javascript atom for pre-m30 Xwalk.
-  if (session->xwalk->GetBuildNo() < 1576)
-    return ExecuteTouchSingleTapAtom(
-        session, web_view, element_id, params, value);
 
   WebPoint location;
   Status status = GetElementClickableLocation(
@@ -263,11 +244,11 @@ Status ExecuteSendKeysToElement(
     }
 
     // Separate the string into separate paths, delimited by '\n'.
-    std::vector<base::FilePath::StringType> path_strings;
-    base::SplitString(paths_string, '\n', &path_strings);
     std::vector<base::FilePath> paths;
-    for (size_t i = 0; i < path_strings.size(); ++i)
-      paths.push_back(base::FilePath(path_strings[i]));
+    for (const auto& path_piece : base::SplitStringPiece(
+             paths_string, base::FilePath::StringType(1, '\n'),
+             base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL))
+      paths.push_back(base::FilePath(path_piece));
 
     bool multiple = false;
     status = IsElementAttributeEqualToIgnoreCase(

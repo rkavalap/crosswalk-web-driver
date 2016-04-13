@@ -25,13 +25,13 @@ class Status;
 class GeolocationOverrideManager : public DevToolsEventListener {
  public:
   explicit GeolocationOverrideManager(DevToolsClient* client);
-  virtual ~GeolocationOverrideManager();
+  ~GeolocationOverrideManager() override;
 
   Status OverrideGeolocation(const Geoposition& geoposition);
 
   // Overridden from DevToolsEventListener:
-  virtual Status OnConnected(DevToolsClient* client) override;
-  virtual Status OnEvent(DevToolsClient* client,
+  Status OnConnected(DevToolsClient* client) override;
+  Status OnEvent(DevToolsClient* client,
                          const std::string& method,
                          const base::DictionaryValue& params) override;
 
