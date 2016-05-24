@@ -118,7 +118,7 @@ void HandleRequestOnCmdThread(
     if (peer_address != kLocalHostAddress &&
         std::find(whitelisted_ips.begin(), whitelisted_ips.end(),
                   peer_address) == whitelisted_ips.end()) {
-      LOG(WARNING) << "unauthorized access from " << request.peer.ToString();
+      LOG(INFO) << "unauthorized access from " << request.peer.ToString();
       scoped_ptr<net::HttpServerResponseInfo> response(
           new net::HttpServerResponseInfo(net::HTTP_UNAUTHORIZED));
       response->SetBody("Unauthorized access", "text/plain");

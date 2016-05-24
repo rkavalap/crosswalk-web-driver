@@ -31,6 +31,7 @@ class ResponseBuffer : public base::RefCountedThreadSafe<ResponseBuffer> {
 
   void OnResponse(int result, const std::string& response) {
     response_ = response;
+    VLOG(0) << "AdbImpl OnResponse " << response ;
     result_ = result;
     ready_.Signal();
   }
@@ -41,14 +42,21 @@ class ResponseBuffer : public base::RefCountedThreadSafe<ResponseBuffer> {
     while (!ready_.IsSignaled()) {
       base::TimeDelta delta = deadline - base::TimeTicks::Now();
       if (delta <= base::TimeDelta())
+       {
+        VLOG(0) << "AdbImpl GetResponse timedout " ;
         return Status(kTimeout, base::StringPrintf(
             "Adb command timed out after %d seconds",
             static_cast<int>(timeout.InSeconds())));
+       }
       ready_.TimedWait(timeout);
     }
     if (result_ < 0)
-      return Status(kUnknownError,
-          "Failed to run adb command, is the adb server running?");
+    {
+       VLOG(0) << "AdbImpl GetResponse --- . Failed to run adb command " << base::StringPrintf("%d",result_) ;
+       return Status(kUnknownError, "Failed to run adb command, is the adb server running?");
+    }
+     
+    VLOG(0) << "AdbImpl GetResponse --- Everything ok ";
     *response = response_;
     return Status(kOk);
   }
@@ -65,6 +73,7 @@ class ResponseBuffer : public base::RefCountedThreadSafe<ResponseBuffer> {
 void ExecuteCommandOnIOThread(
     const std::string& command, scoped_refptr<ResponseBuffer> response_buffer,
     int port) {
+  VLOG(0) << "AdbImpl ExecuteCommandONIOThread : port is " << base::StringPrintf("%d",port) ;
   CHECK(base::MessageLoopForIO::IsCurrent());
   AdbClientSocket::AdbQuery(port, command,
       base::Bind(&ResponseBuffer::OnResponse, response_buffer));
@@ -84,6 +93,7 @@ AdbImpl::~AdbImpl() {}
 Status AdbImpl::GetDevices(std::vector<std::string>* devices) {
   std::string response;
   Status status = ExecuteCommand("host:devices", &response);
+  VLOG(0) << "AdbImpl GetDevices response " << response;
   if (!status.IsOk())
     return status;
   base::StringTokenizer lines(response, "\n");
@@ -108,12 +118,16 @@ Status AdbImpl::ForwardPort(
       "forward:tcp:" + base::IntToString(local_port) + ";localabstract:" +
           remote_abstract,
       &response);
+  VLOG(0) << "ForwardPort : response is " << response; 
   if (!status.IsOk())
+  {
+     VLOG(0) << "ForwardPort :returning status  not OK  " ; 
     return status;
+  }
   if (response == "OKAY")
     return Status(kOk);
-  return Status(kUnknownError, "Failed to forward ports to device " +
-                device_serial + ": " + response);
+  VLOG(0) << "ForwardPort : Failed to forward port  " << response; 
+  return Status(kUnknownError, "Failed to forward ports to device " + device_serial + ": " + response);
 }
 
 Status AdbImpl::SetCommandLineFile(
@@ -236,15 +250,13 @@ Status AdbImpl::ExecuteCommand(
     const std::string& command, 
     std::string* response) {
   scoped_refptr<ResponseBuffer> response_buffer = new ResponseBuffer;
-  VLOG(1) << "Sending adb command: " << command;
+  VLOG(0) << "Sending adb command: " << command << " at port_ " << port_;
   io_task_runner_->PostTask(
       FROM_HERE,
       base::Bind(&ExecuteCommandOnIOThread, command, response_buffer, port_));
   Status status = response_buffer->GetResponse(
       response, base::TimeDelta::FromSeconds(30));
-  if (status.IsOk()) {
-    VLOG(1) << "Received adb response: " << *response;
-  }
+    VLOG(0) << "Received adb response: " << *response;
   return status;
 }
 

@@ -126,6 +126,7 @@ Status InitSessionHelper(
                       &devtools_event_listeners);
   if (status.IsError())
     return status;
+  VLOG(0) << "Session:: port is " << capabilities.device_bridge_port;
 
   status = LaunchXwalk(bound_params.context_getter.get(),
                        bound_params.socket_factory,

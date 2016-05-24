@@ -454,6 +454,7 @@ Status Capabilities::Parse(const base::DictionaryValue& desired_caps) {
        it != parser_map.end(); ++it) {
     const base::Value* capability = NULL;
     if (desired_caps.Get(it->first, &capability)) {
+      VLOG(0) << "CapabilitiesParse k:: " << it->first;
       Status status = it->second.Run(*capability, this);
       if (status.IsError()) {
         return Status(

@@ -88,6 +88,7 @@ Status DeviceManager::AcquireSpecificDevice(
     }
   }    
   
+   VLOG(0) << "AcquireSpecificDevice::::::::  is not online   " << device_serial;
   return Status(kUnknownError, "Device " + device_serial + " is not online");
 }
 

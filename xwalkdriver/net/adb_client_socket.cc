@@ -470,6 +470,7 @@ void AdbClientSocket::OnResponseData(
   bytes_left -= result;
   std::string new_response =
       response + std::string(response_buffer->data(), result);
+ VLOG(0) << "AdbQuerySocket : OnResponseData " << new_response  ;
   if (bytes_left == 0) {
     callback.Run(net::OK, new_response);
     return;

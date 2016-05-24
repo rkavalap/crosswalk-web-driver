@@ -261,8 +261,10 @@ Status LaunchAndroidXwalk(
   Status status(kOk);
   scoped_ptr<Device> device;
   if (capabilities.device_serial.empty()) {
+    VLOG(0) << "LaunchAndroidXwalk: Acquiring device " ;
     status = device_manager->AcquireDevice(&device);
   } else {
+      VLOG(0) << "LaunchAndroidXwalk: AcquireSpecificDevice " ;
     status = device_manager->AcquireSpecificDevice(
         capabilities.device_serial, &device);
   }
@@ -270,11 +272,13 @@ Status LaunchAndroidXwalk(
     return status;
   }
 
+  VLOG(0) << "LaunchAndroidXwalk: Acquired Device " ;
   Switches switches(capabilities.switches);
   for (size_t i = 0; i < arraysize(kCommonSwitches); ++i)
     switches.SetSwitch(kCommonSwitches[i]);
   switches.SetSwitch("disable-fre");
   switches.SetSwitch("enable-remote-debugging");
+  VLOG(0) << " LaunchAndroidXWalk: SetUp " ;
 
   std::string app_id;
   int unuse_remote_port;
@@ -288,6 +292,7 @@ Status LaunchAndroidXwalk(
     return status;
   }
 
+  VLOG(0) << " LaunchAndroidXwalk: Calling WaitForDevTools " ;
   scoped_ptr<DevToolsHttpClient> devtools_client;
   status = WaitForDevToolsAndCheckVersion(NetAddress(port),
                                           context_getter,
@@ -297,11 +302,13 @@ Status LaunchAndroidXwalk(
     device->TearDown();
     return status;
   }
+  VLOG(0) << " LaunchAndroidXwalk: Calling XwalkAndroidImpl" ;
 
   xwalk->reset(new XwalkAndroidImpl(devtools_client.Pass(),
                                       devtools_event_listeners,
                                       port_reservation.Pass(),
                                       device.Pass()));
+  VLOG(0) << " Everything fine LaunchedAndroidXWALK" ;
   return Status(kOk);
 }
 
@@ -390,9 +397,11 @@ Status LaunchXwalk(
   VLOG(0) << "Device Bridge Port: " << capabilities.device_bridge_port;
 
   if (capabilities.IsAndroid()) {
+  VLOG(0) << "LaunchXwalk:: isAndroid ";
     device_manager->reset(new DeviceManager(
         context_getter->GetNetworkTaskRunner(),
         capabilities.device_bridge_port, 0));
+  VLOG(0) << "LaunchXwalk:: CallingLaunchAndroidXwalk ";
     return LaunchAndroidXwalk(context_getter,
                                port,
                                port_reservation.Pass(),
