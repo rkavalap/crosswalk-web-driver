@@ -4,8 +4,11 @@
 
 #include "xwalk/test/xwalkdriver/xwalk/console_logger.h"
 
+#include <stddef.h>
+
 #include "base/json/json_writer.h"
 #include "base/logging.h"
+#include "base/macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "xwalk/test/xwalkdriver/xwalk/devtools_client.h"
@@ -57,6 +60,7 @@ Status ConsoleLogger::OnEvent(
     if (message_dict->GetString("text", &text) && !text.empty() &&
         message_dict->GetString("level", &level_name) &&
         ConsoleLevelToLogLevel(level_name, &level)) {
+
       const char* origin_cstr = "unknown";
       std::string origin;
       if ((message_dict->GetString("url", &origin) && !origin.empty()) ||

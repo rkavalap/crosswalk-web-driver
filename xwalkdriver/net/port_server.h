@@ -5,6 +5,8 @@
 #ifndef XWALK_TEST_XWALKDRIVER_NET_PORT_SERVER_H_
 #define XWALK_TEST_XWALKDRIVER_NET_PORT_SERVER_H_
 
+#include <stdint.h>
+
 #include <list>
 #include <set>
 #include <string>
@@ -17,14 +19,14 @@ class Status;
 
 class PortReservation {
  public:
-  PortReservation(const base::Closure& on_free_func, int port);
+  PortReservation(const base::Closure& on_free_func, uint16_t port);
   ~PortReservation();
 
   void Leak();
 
  private:
   base::Closure on_free_func_;
-  int port_;
+  uint16_t port_;
 };
 
 // Communicates with a port reservation management server.
@@ -35,34 +37,40 @@ class PortServer {
   explicit PortServer(const std::string& path);
   ~PortServer();
 
-  Status ReservePort(int* port, scoped_ptr<PortReservation>* reservation);
+  Status ReservePort(uint16_t* port, scoped_ptr<PortReservation>* reservation);
 
  private:
-  Status RequestPort(int* port);
-  void ReleasePort(int port);
+  Status RequestPort(uint16_t* port);
+  void ReleasePort(uint16_t port);
 
   std::string path_;
 
   base::Lock free_lock_;
-  std::list<int> free_;
+  std::list<uint16_t> free_;
 };
 
 // Manages reservation of a block of local ports.
 class PortManager {
  public:
-  PortManager(int min_port, int max_port);
+  PortManager(uint16_t min_port, uint16_t max_port);
   ~PortManager();
 
-  Status ReservePort(int* port, scoped_ptr<PortReservation>* reservation);
+  Status ReservePort(uint16_t* port, scoped_ptr<PortReservation>* reservation);
+  // Since we cannot remove forwarded adb ports on older SDKs,
+  // maintain a pool of forwarded ports for reuse.
+  Status ReservePortFromPool(uint16_t* port,
+                             scoped_ptr<PortReservation>* reservation);
 
  private:
-  void ReleasePort(int port);
+  uint16_t FindAvailablePort() const;
+  void ReleasePort(uint16_t port);
+  void ReleasePortToPool(uint16_t port);
 
-  base::Lock taken_lock_;
-  std::set<int> taken_;
-
-  int min_port_;
-  int max_port_;
+  base::Lock lock_;
+  std::set<uint16_t> taken_;
+  std::list<uint16_t> unused_forwarded_port_;
+  uint16_t min_port_;
+  uint16_t max_port_;
 };
 
 #endif  // XWALK_TEST_XWALKDRIVER_NET_PORT_SERVER_H_

@@ -4,12 +4,13 @@
 
 #include "xwalk/test/xwalkdriver/xwalk_launcher.h"
 
+#include <stddef.h>
+#include <stdint.h>
 #include <algorithm>
-#include <set>
+#include <utility>
 #include <vector>
 
 #include "base/base64.h"
-#include "base/basictypes.h"
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
@@ -29,37 +30,92 @@
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "build/build_config.h"
+#include "crypto/rsa_private_key.h"
 #include "crypto/sha2.h"
 #include "third_party/zlib/google/zip.h"
 #include "xwalk/test/xwalkdriver/net/port_server.h"
 #include "xwalk/test/xwalkdriver/net/url_request_context_getter.h"
-#include "xwalk/test/xwalkdriver/xwalk/device.h"
-#include "xwalk/test/xwalkdriver/xwalk/android_device.h"
 #include "xwalk/test/xwalkdriver/xwalk/device_manager.h"
+#include "xwalk/test/xwalkdriver/xwalk/devtools_client_impl.h"
+#include "xwalk/test/xwalkdriver/xwalk/devtools_event_listener.h"
 #include "xwalk/test/xwalkdriver/xwalk/devtools_http_client.h"
+#include "xwalk/test/xwalkdriver/xwalk/embedded_automation_extension.h"
 #include "xwalk/test/xwalkdriver/xwalk/status.h"
-#include "xwalk/test/xwalkdriver/xwalk/tizen_device.h"
 #include "xwalk/test/xwalkdriver/xwalk/user_data_dir.h"
 #include "xwalk/test/xwalkdriver/xwalk/version.h"
 #include "xwalk/test/xwalkdriver/xwalk/web_view.h"
 #include "xwalk/test/xwalkdriver/xwalk/xwalk_android_impl.h"
 #include "xwalk/test/xwalkdriver/xwalk/xwalk_desktop_impl.h"
-#include "xwalk/test/xwalkdriver/xwalk/xwalk_existing_impl.h"
+#include "xwalk/test/xwalkdriver/xwalk/xwalk_remote_impl.h"
 #include "xwalk/test/xwalkdriver/xwalk/xwalk_finder.h"
-#include "xwalk/test/xwalkdriver/xwalk/xwalk_tizen_impl.h"
 
 #if defined(OS_POSIX)
-#include <fcntl.h>  // NOLINT(build/include_order)
-#include <sys/stat.h>  // NOLINT(build/include_order)
-#include <sys/types.h>  // NOLINT(build/include_order)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#elif defined(OS_WIN)
+#include "xwalk/test/xwalkdriver/keycode_text_conversion.h"
 #endif
 
 namespace {
 
-const char* kCommonSwitches[] = {
-    "ignore-certificate-errors", "metrics-recording-only"};
+const char* const kCommonSwitches[] = {
+  "disable-popup-blocking",
+  "ignore-certificate-errors",
+  "metrics-recording-only"
+};
 
-Status PrepareCommandLine(int port,
+const char* const kDesktopSwitches[] = {
+  "disable-hang-monitor",
+  "disable-prompt-on-repost",
+  "disable-sync",
+  "no-first-run",
+  "disable-background-networking",
+  "disable-web-resources",
+  "safebrowsing-disable-auto-update",
+  "safebrowsing-disable-download-protection",
+  "disable-client-side-phishing-detection",
+  "disable-component-update",
+  "disable-default-apps",
+  "enable-logging",
+  "log-level=0",
+  "password-store=basic",
+  "use-mock-keychain",
+  "test-type=webdriver"
+};
+
+const char* const kAndroidSwitches[] = {
+  "disable-fre",
+  "enable-remote-debugging"
+};
+
+#if defined(OS_LINUX)
+const char kEnableCrashReport[] = "enable-crash-reporter-for-testing";
+#endif
+
+Status UnpackAutomationExtension(const base::FilePath& temp_dir,
+                                 base::FilePath* automation_extension) {
+  std::string decoded_extension;
+  if (!base::Base64Decode(kAutomationExtension, &decoded_extension))
+    return Status(kUnknownError, "failed to base64decode automation extension");
+
+  base::FilePath extension_zip = temp_dir.AppendASCII("internal.zip");
+  int size = static_cast<int>(decoded_extension.length());
+  if (base::WriteFile(extension_zip, decoded_extension.c_str(), size)
+      != size) {
+    return Status(kUnknownError, "failed to write automation extension zip");
+  }
+
+  base::FilePath extension_dir = temp_dir.AppendASCII("internal");
+  if (!zip::Unzip(extension_zip, extension_dir))
+    return Status(kUnknownError, "failed to unzip automation extension");
+
+  *automation_extension = extension_dir;
+  return Status(kOk);
+}
+
+Status PrepareCommandLine(uint16_t port,
                           const Capabilities& capabilities,
                           base::CommandLine* prepared_command,
                           base::ScopedTempDir* user_data_dir,
@@ -77,15 +133,46 @@ Status PrepareCommandLine(int port,
   base::CommandLine command(program);
   Switches switches;
 
-  switches.SetSwitch("remote-debugging-port", base::IntToString(port));
-
+  for (const auto& common_switch : kCommonSwitches)
+    switches.SetUnparsedSwitch(common_switch);
+  for (const auto& desktop_switch : kDesktopSwitches)
+    switches.SetUnparsedSwitch(desktop_switch);
+  switches.SetSwitch("remote-debugging-port", base::UintToString(port));
   for (const auto& excluded_switch : capabilities.exclude_switches) {
     switches.RemoveSwitch(excluded_switch);
   }
   switches.SetFromSwitches(capabilities.switches);
 
+  base::FilePath user_data_dir_path;
+  if (switches.HasSwitch("user-data-dir")) {
+    user_data_dir_path = base::FilePath(
+        switches.GetSwitchValueNative("user-data-dir"));
+  } else {
+    command.AppendArg("data:,");
+    if (!user_data_dir->CreateUniqueTempDir())
+      return Status(kUnknownError, "cannot create temp dir for user data dir");
+    switches.SetSwitch("user-data-dir", user_data_dir->path().value());
+    user_data_dir_path = user_data_dir->path();
+  }
+
+  Status status = internal::PrepareUserDataDir(user_data_dir_path,
+                                               capabilities.prefs.get(),
+                                               capabilities.local_state.get());
+  if (status.IsError())
+    return status;
+
+  if (!extension_dir->CreateUniqueTempDir()) {
+    return Status(kUnknownError,
+                  "cannot create temp dir for unpacking extensions");
+  }
+  status = internal::ProcessExtensions(capabilities.extensions,
+                                       extension_dir->path(),
+                                       true,
+                                       &switches,
+                                       extension_bg_pages);
+  if (status.IsError())
+    return status;
   switches.AppendToCommandLine(&command);
-  command.AppendArg("about:blank");
   *prepared_command = command;
   return Status(kOk);
 }
@@ -94,15 +181,36 @@ Status WaitForDevToolsAndCheckVersion(
     const NetAddress& address,
     URLRequestContextGetter* context_getter,
     const SyncWebSocketFactory& socket_factory,
+    const Capabilities* capabilities,
     scoped_ptr<DevToolsHttpClient>* user_client) {
+  scoped_ptr<DeviceMetrics> device_metrics;
+  if (capabilities && capabilities->device_metrics)
+    device_metrics.reset(new DeviceMetrics(*capabilities->device_metrics));
+
+  scoped_ptr<std::set<WebViewInfo::Type>> window_types;
+  if (capabilities && !capabilities->window_types.empty()) {
+    window_types.reset(
+        new std::set<WebViewInfo::Type>(capabilities->window_types));
+  } else {
+    window_types.reset(new std::set<WebViewInfo::Type>());
+  }
+
   scoped_ptr<DevToolsHttpClient> client(new DevToolsHttpClient(
-      address, context_getter, socket_factory));
+      address, context_getter, socket_factory, std::move(device_metrics),
+      std::move(window_types)));
   base::TimeTicks deadline =
       base::TimeTicks::Now() + base::TimeDelta::FromSeconds(60);
   Status status = client->Init(deadline - base::TimeTicks::Now());
   if (status.IsError())
     return status;
-  if (client->build_no() < kMinimumSupportedXwalkBuildNo) {
+
+  base::CommandLine* cmd_line = base::CommandLine::ForCurrentProcess();
+  if (cmd_line->HasSwitch("disable-build-check")) {
+    LOG(INFO) << "You are using an unsupported command-line switch: "
+                    "--disable-build-check. Please don't report bugs that "
+                    "cannot be reproduced with this switch removed.";
+  } else if (client->browser_info()->build_no <
+             kMinimumSupportedXwalkBuildNo) {
     return Status(kUnknownError, "Xwalk version must be >= " +
         GetMinimumSupportedXwalkVersion());
   }
@@ -112,7 +220,7 @@ Status WaitForDevToolsAndCheckVersion(
     client->GetWebViewsInfo(&views_info);
     for (size_t i = 0; i < views_info.GetSize(); ++i) {
       if (views_info.Get(i).type == WebViewInfo::kPage) {
-        *user_client = client.Pass();
+        *user_client = std::move(client);
         return Status(kOk);
       }
     }
@@ -121,34 +229,79 @@ Status WaitForDevToolsAndCheckVersion(
   return Status(kUnknownError, "unable to discover open pages");
 }
 
-Status LaunchExistingXwalkSession(
+Status CreateBrowserwideDevToolsClientAndConnect(
+    const NetAddress& address,
+    const PerfLoggingPrefs& perf_logging_prefs,
+    const SyncWebSocketFactory& socket_factory,
+    const ScopedVector<DevToolsEventListener>& devtools_event_listeners,
+    scoped_ptr<DevToolsClient>* browser_client) {
+  scoped_ptr<DevToolsClient> client(new DevToolsClientImpl(
+      socket_factory, base::StringPrintf("ws://%s/devtools/browser/",
+                                         address.ToString().c_str()),
+      DevToolsClientImpl::kBrowserwideDevToolsClientId));
+  for (ScopedVector<DevToolsEventListener>::const_iterator it =
+          devtools_event_listeners.begin();
+      it != devtools_event_listeners.end();
+      ++it) {
+    // Only add listeners that subscribe to the browser-wide |DevToolsClient|.
+    // Otherwise, listeners will think this client is associated with a webview,
+    // and will send unrecognized commands to it.
+    if ((*it)->subscribes_to_browser())
+      client->AddListener(*it);
+  }
+  // Provide the client regardless of whether it connects, so that Xwalk always
+  // has a valid |devtools_websocket_client_|. If not connected, no listeners
+  // will be notified, and client will just return kDisconnected errors if used.
+  *browser_client = std::move(client);
+  // To avoid unnecessary overhead, only connect if tracing is enabled, since
+  // the browser-wide client is currently only used for tracing.
+  if (!perf_logging_prefs.trace_categories.empty()) {
+    Status status = (*browser_client)->ConnectIfNecessary();
+    if (status.IsError())
+      return status;
+  }
+  return Status(kOk);
+}
+
+Status LaunchRemoteXwalkSession(
     URLRequestContextGetter* context_getter,
     const SyncWebSocketFactory& socket_factory,
     const Capabilities& capabilities,
-    ScopedVector<DevToolsEventListener>& devtools_event_listeners,
+    ScopedVector<DevToolsEventListener>* devtools_event_listeners,
     scoped_ptr<Xwalk>* xwalk) {
   Status status(kOk);
-  scoped_ptr<DevToolsHttpClient> devtools_client;
+  scoped_ptr<DevToolsHttpClient> devtools_http_client;
   status = WaitForDevToolsAndCheckVersion(
       capabilities.debugger_address, context_getter, socket_factory,
-      &devtools_client);
+      NULL, &devtools_http_client);
   if (status.IsError()) {
     return Status(kUnknownError, "cannot connect to xwalk at " +
                       capabilities.debugger_address.ToString(),
                   status);
   }
-  xwalk->reset(new XwalkExistingImpl(devtools_client.Pass(),
-                                       devtools_event_listeners));
+
+  scoped_ptr<DevToolsClient> devtools_websocket_client;
+  status = CreateBrowserwideDevToolsClientAndConnect(
+      capabilities.debugger_address, capabilities.perf_logging_prefs,
+      socket_factory, *devtools_event_listeners, &devtools_websocket_client);
+  if (status.IsError()) {
+    LOG(INFO) << "Browser-wide DevTools client failed to connect: "
+                 << status.message();
+  }
+
+  xwalk->reset(new XwalkRemoteImpl(std::move(devtools_http_client),
+                                     std::move(devtools_websocket_client),
+                                     *devtools_event_listeners));
   return Status(kOk);
 }
 
 Status LaunchDesktopXwalk(
     URLRequestContextGetter* context_getter,
-    int port,
+    uint16_t port,
     scoped_ptr<PortReservation> port_reservation,
     const SyncWebSocketFactory& socket_factory,
     const Capabilities& capabilities,
-    ScopedVector<DevToolsEventListener>& devtools_event_listeners,
+    ScopedVector<DevToolsEventListener>* devtools_event_listeners,
     scoped_ptr<Xwalk>* xwalk) {
   base::CommandLine command(base::CommandLine::NO_PROGRAM);
   base::ScopedTempDir user_data_dir;
@@ -165,6 +318,23 @@ Status LaunchDesktopXwalk(
 
   base::LaunchOptions options;
 
+#if defined(OS_LINUX)
+  // If minidump path is set in the capability, enable minidump for crashes.
+  if (!capabilities.minidump_path.empty()) {
+    VLOG(0) << "Minidump generation specified. Will save dumps to: "
+            << capabilities.minidump_path;
+
+    options.environ["XWALK_HEADLESS"] = 1;
+    options.environ["BREAKPAD_DUMP_LOCATION"] = capabilities.minidump_path;
+
+    if (!command.HasSwitch(kEnableCrashReport))
+      command.AppendSwitch(kEnableCrashReport);
+  }
+
+  // We need to allow new privileges so that xwalk's setuid sandbox can run.
+  options.allow_new_privs = true;
+#endif
+
 #if !defined(OS_WIN)
   if (!capabilities.log_path.empty())
     options.environ["XWALK_LOG_FILE"] = capabilities.log_path;
@@ -175,19 +345,19 @@ Status LaunchDesktopXwalk(
 #if defined(OS_POSIX)
   base::FileHandleMappingVector no_stderr;
   base::ScopedFD devnull;
-  //int devnull = -1;
-  //base::ScopedFD scoped_devnull(&devnull);
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch("verbose")) {
     // Redirect stderr to /dev/null, so that Xwalk log spew doesn't confuse
     // users.
-    //devnull = open("/dev/null", O_WRONLY);
     devnull.reset(HANDLE_EINTR(open("/dev/null", O_WRONLY)));
-    //if (devnull == -1)
     if (!devnull.is_valid())
       return Status(kUnknownError, "couldn't open /dev/null");
     no_stderr.push_back(std::make_pair(devnull.get(), STDERR_FILENO));
     options.fds_to_remap = &no_stderr;
   }
+#elif defined(OS_WIN)
+  if (!SwitchToUSKeyboardLayout())
+    VLOG(0) << "Can not set to US keyboard layout - Some keycodes may be"
+        "interpreted incorrectly";
 #endif
 
 #if defined(OS_WIN)
@@ -200,9 +370,10 @@ Status LaunchDesktopXwalk(
   if (!process.IsValid())
     return Status(kUnknownError, "xwalk failed to start");
 
-  scoped_ptr<DevToolsHttpClient> devtools_client;
+  scoped_ptr<DevToolsHttpClient> devtools_http_client;
   status = WaitForDevToolsAndCheckVersion(
-      NetAddress(port), context_getter, socket_factory, &devtools_client);
+      NetAddress(port), context_getter, socket_factory, &capabilities,
+      &devtools_http_client);
 
   if (status.IsError()) {
     int exit_code;
@@ -218,10 +389,16 @@ Status LaunchDesktopXwalk(
           termination_reason = "exited abnormally";
           break;
         case base::TERMINATION_STATUS_PROCESS_WAS_KILLED:
+#if defined(OS_CHROMEOS)
+        case base::TERMINATION_STATUS_PROCESS_WAS_KILLED_BY_OOM:
+#endif
           termination_reason = "was killed";
           break;
         case base::TERMINATION_STATUS_PROCESS_CRASHED:
           termination_reason = "crashed";
+          break;
+        case base::TERMINATION_STATUS_LAUNCH_FAILED:
+          termination_reason = "failed to launch";
           break;
         default:
           termination_reason = "unknown";
@@ -238,132 +415,102 @@ Status LaunchDesktopXwalk(
     }
     return status;
   }
-  scoped_ptr<XwalkDesktopImpl> xwalk_desktop(
-      new XwalkDesktopImpl(devtools_client.Pass(),
-                            devtools_event_listeners,
-                            port_reservation.Pass(),
-                            process.Pass(),
-                            command,
-                            &extension_dir));
-  *xwalk = xwalk_desktop.Pass();
+
+  scoped_ptr<DevToolsClient> devtools_websocket_client;
+  status = CreateBrowserwideDevToolsClientAndConnect(
+      NetAddress(port), capabilities.perf_logging_prefs, socket_factory,
+      *devtools_event_listeners, &devtools_websocket_client);
+  if (status.IsError()) {
+    LOG(INFO) << "Browser-wide DevTools client failed to connect: "
+                 << status.message();
+  }
+
+  scoped_ptr<XwalkDesktopImpl> xwalk_desktop(new XwalkDesktopImpl(
+      std::move(devtools_http_client), std::move(devtools_websocket_client),
+      *devtools_event_listeners, std::move(port_reservation),
+      std::move(process), command, &user_data_dir, &extension_dir));
+  for (size_t i = 0; i < extension_bg_pages.size(); ++i) {
+    VLOG(0) << "Waiting for extension bg page load: " << extension_bg_pages[i];
+    scoped_ptr<WebView> web_view;
+    Status status = xwalk_desktop->WaitForPageToLoad(
+        extension_bg_pages[i], base::TimeDelta::FromSeconds(10), &web_view);
+    if (status.IsError()) {
+      return Status(kUnknownError,
+                    "failed to wait for extension background page to load: " +
+                        extension_bg_pages[i],
+                    status);
+    }
+  }
+  *xwalk = std::move(xwalk_desktop);
   return Status(kOk);
 }
 
 Status LaunchAndroidXwalk(
     URLRequestContextGetter* context_getter,
-    int port,
+    uint16_t port,
     scoped_ptr<PortReservation> port_reservation,
     const SyncWebSocketFactory& socket_factory,
     const Capabilities& capabilities,
-    ScopedVector<DevToolsEventListener>& devtools_event_listeners,
+    ScopedVector<DevToolsEventListener>* devtools_event_listeners,
     DeviceManager* device_manager,
     scoped_ptr<Xwalk>* xwalk) {
   Status status(kOk);
   scoped_ptr<Device> device;
-  if (capabilities.device_serial.empty()) {
+  if (capabilities.android_device_serial.empty()) {
     VLOG(0) << "LaunchAndroidXwalk: Acquiring device " ;
     status = device_manager->AcquireDevice(&device);
   } else {
       VLOG(0) << "LaunchAndroidXwalk: AcquireSpecificDevice " ;
     status = device_manager->AcquireSpecificDevice(
-        capabilities.device_serial, &device);
+        capabilities.android_device_serial, &device);
   }
-  if (status.IsError()) {
+  if (status.IsError())
     return status;
-  }
 
   VLOG(0) << "LaunchAndroidXwalk: Acquired Device " ;
   Switches switches(capabilities.switches);
-  for (size_t i = 0; i < arraysize(kCommonSwitches); ++i)
-    switches.SetSwitch(kCommonSwitches[i]);
-  switches.SetSwitch("disable-fre");
-  switches.SetSwitch("enable-remote-debugging");
-  VLOG(0) << " LaunchAndroidXWalk: SetUp " ;
-
-  std::string app_id;
-  int unuse_remote_port;
-  app_id = capabilities.android_package + "/" + capabilities.android_activity;
-  status = device->SetUp(app_id,
+  for (auto common_switch : kCommonSwitches)
+    switches.SetUnparsedSwitch(common_switch);
+  for (auto android_switch : kAndroidSwitches)
+    switches.SetUnparsedSwitch(android_switch);
+  status = device->SetUp(capabilities.android_package,
+                         capabilities.android_activity,
+                         capabilities.android_process,
                          switches.ToString(),
-                         port,
-                         unuse_remote_port);
+                         capabilities.android_use_running_app,
+                         port);
   if (status.IsError()) {
     device->TearDown();
     return status;
   }
 
   VLOG(0) << " LaunchAndroidXwalk: Calling WaitForDevTools " ;
-  scoped_ptr<DevToolsHttpClient> devtools_client;
+  scoped_ptr<DevToolsHttpClient> devtools_http_client;
   status = WaitForDevToolsAndCheckVersion(NetAddress(port),
                                           context_getter,
                                           socket_factory,
-                                          &devtools_client);
+                                          &capabilities,
+                                          &devtools_http_client);
   if (status.IsError()) {
     device->TearDown();
     return status;
   }
   VLOG(0) << " LaunchAndroidXwalk: Calling XwalkAndroidImpl" ;
 
-  xwalk->reset(new XwalkAndroidImpl(devtools_client.Pass(),
-                                      devtools_event_listeners,
-                                      port_reservation.Pass(),
-                                      device.Pass()));
-  VLOG(0) << " Everything fine LaunchedAndroidXWALK" ;
-  return Status(kOk);
-}
-
-// You can launch xwalk manually in Tizen IVI with remote debug option.
-// Then use the capabilities 'tizenDebuggerAddress' in the form of
-// <hostname/ip:port>, e.g. '10.238.158.1:38947'
-
-Status LaunchTizenXwalk(
-    URLRequestContextGetter* context_getter,
-    int local_port,
-    scoped_ptr<PortReservation> port_reservation,
-    const SyncWebSocketFactory& socket_factory,
-    const Capabilities& capabilities,
-    ScopedVector<DevToolsEventListener>& devtools_event_listeners,
-    DeviceManager* device_manager,
-    scoped_ptr<Xwalk>* xwalk) {
-  Status status(kOk);
-  scoped_ptr<Device> device;
-  // In real tizen device, its device serial is always same as its
-  // net address.
-  if (capabilities.device_serial.empty() && 
-      capabilities.debugger_address.host().empty()) {
-    status = device_manager->AcquireDevice(&device);
-  } else if (!capabilities.device_serial.empty()) {
-    status = device_manager->AcquireSpecificDevice(
-        capabilities.device_serial, &device);
-  } else {
-    status = device_manager->AcquireSpecificDevice(
-        capabilities.debugger_address.host(), &device);
-  }
-
-  if(status.IsError()) {
-    return status;
-  }
-  int remote_port = capabilities.debugger_address.port();
-  Switches switches;
-  status = device->SetUp(capabilities.tizen_app_id,
-                                 switches.ToString(),
-                                 local_port,
-                                 remote_port);
-
-  scoped_ptr<DevToolsHttpClient> devtools_client;
-  status = WaitForDevToolsAndCheckVersion(NetAddress(local_port),
-                                          context_getter,
-                                          socket_factory,
-                                          &devtools_client);
+  scoped_ptr<DevToolsClient> devtools_websocket_client;
+  status = CreateBrowserwideDevToolsClientAndConnect(
+      NetAddress(port), capabilities.perf_logging_prefs, socket_factory,
+      *devtools_event_listeners, &devtools_websocket_client);
   if (status.IsError()) {
-    device->TearDown();
-    return status;
+    LOG(WARNING) << "Browser-wide DevTools client failed to connect: "
+                 << status.message();
   }
 
-  xwalk->reset(new XwalkTizenImpl(devtools_client.Pass(),
-                                  devtools_event_listeners,
-                                  port_reservation.Pass(),
-                                  device.Pass()));
+  xwalk->reset(new XwalkAndroidImpl(
+      std::move(devtools_http_client), std::move(devtools_websocket_client),
+      *devtools_event_listeners, std::move(port_reservation),
+      std::move(device)));
+  VLOG(0) << " Everything fine LaunchedAndroidXWALK" ;
   return Status(kOk);
 }
 
@@ -372,106 +519,340 @@ Status LaunchTizenXwalk(
 Status LaunchXwalk(
     URLRequestContextGetter* context_getter,
     const SyncWebSocketFactory& socket_factory,
-    scoped_ptr<DeviceManager>* device_manager,
+    DeviceManager* device_manager,
     PortServer* port_server,
     PortManager* port_manager,
     const Capabilities& capabilities,
-    ScopedVector<DevToolsEventListener>& devtools_event_listeners,
+    ScopedVector<DevToolsEventListener>* devtools_event_listeners,
     scoped_ptr<Xwalk>* xwalk) {
-  if (capabilities.IsExistingBrowser()) {
-    return LaunchExistingXwalkSession(
+  if (capabilities.IsRemoteBrowser()) {
+    return LaunchRemoteXwalkSession(
         context_getter, socket_factory,
         capabilities, devtools_event_listeners, xwalk);
   }
 
-  int port = 0;
+  uint16_t port = 0;
   scoped_ptr<PortReservation> port_reservation;
   Status port_status(kOk);
-  if (port_server)
-    port_status = port_server->ReservePort(&port, &port_reservation);
-  else
-    port_status = port_manager->ReservePort(&port, &port_reservation);
-  if (port_status.IsError())
-    return Status(kUnknownError, "cannot reserve port for Xwalk", port_status);
-
-  VLOG(0) << "Device Bridge Port: " << capabilities.device_bridge_port;
 
   if (capabilities.IsAndroid()) {
+    if (port_server)
+      port_status = port_server->ReservePort(&port, &port_reservation);
+    else
+      port_status = port_manager->ReservePortFromPool(&port, &port_reservation);
+    if (port_status.IsError())
+      return Status(kUnknownError, "cannot reserve port for Xwalk", 
+                    port_status);
+
+  //VLOG(0) << "Device Bridge Port: " << capabilities.device_bridge_port;
   VLOG(0) << "LaunchXwalk:: isAndroid ";
-    device_manager->reset(new DeviceManager(
-        context_getter->GetNetworkTaskRunner(),
-        capabilities.device_bridge_port, 0));
-  VLOG(0) << "LaunchXwalk:: CallingLaunchAndroidXwalk ";
-    return LaunchAndroidXwalk(context_getter,
-                               port,
-                               port_reservation.Pass(),
-                               socket_factory,
-                               capabilities,
-                               devtools_event_listeners,
-                               device_manager->get(),
-                               xwalk);
-  } else if (capabilities.IsTizen()) {
-    device_manager->reset(new DeviceManager(
-        context_getter->GetNetworkTaskRunner(),
-        capabilities.device_bridge_port, 1));
-    return LaunchTizenXwalk(context_getter,
-                             port,
-                             port_reservation.Pass(),
-                             socket_factory,
-                             capabilities,
-                             devtools_event_listeners,
-                             device_manager->get(),
-                             xwalk);
+
+    return LaunchAndroidXwalk(
+        context_getter, port, std::move(port_reservation), socket_factory,
+        capabilities, devtools_event_listeners, device_manager, xwalk);
   } else {
-    return LaunchDesktopXwalk(context_getter,
-                               port,
-                               port_reservation.Pass(),
-                               socket_factory,
-                               capabilities,
-                               devtools_event_listeners,
-                               xwalk);
+    if (port_server)
+      port_status = port_server->ReservePort(&port, &port_reservation);
+    else
+      port_status = port_manager->ReservePort(&port, &port_reservation);
+    if (port_status.IsError())
+      return Status(kUnknownError, "cannot reserve port for Xwalk",
+                    port_status);
+    return LaunchDesktopXwalk(context_getter, port,
+                               std::move(port_reservation), socket_factory,
+                               capabilities, devtools_event_listeners, xwalk);
   }
 }
 
 namespace internal {
 
+void ConvertHexadecimalToIDAlphabet(std::string* id) {
+  for (size_t i = 0; i < id->size(); ++i) {
+    int val;
+    if (base::HexStringToInt(base::StringPiece(id->begin() + i,
+                                               id->begin() + i + 1),
+                             &val)) {
+      (*id)[i] = val + 'a';
+    } else {
+      (*id)[i] = 'a';
+    }
+  }
+}
+
+std::string GenerateExtensionId(const std::string& input) {
+  uint8_t hash[16];
+  crypto::SHA256HashString(input, hash, sizeof(hash));
+  std::string output = base::ToLowerASCII(base::HexEncode(hash, sizeof(hash)));
+  ConvertHexadecimalToIDAlphabet(&output);
+  return output;
+}
+
+Status GetExtensionBackgroundPage(const base::DictionaryValue* manifest,
+                                  const std::string& id,
+                                  std::string* bg_page) {
+  std::string bg_page_name;
+  bool persistent = true;
+  manifest->GetBoolean("background.persistent", &persistent);
+  const base::Value* unused_value;
+  if (manifest->Get("background.scripts", &unused_value))
+    bg_page_name = "_generated_background_page.html";
+  manifest->GetString("background.page", &bg_page_name);
+  manifest->GetString("background_page", &bg_page_name);
+  if (bg_page_name.empty() || !persistent)
+    return Status(kOk);
+  *bg_page = "xwalk-extension://" + id + "/" + bg_page_name;
+  return Status(kOk);
+}
+
 Status ProcessExtension(const std::string& extension,
                         const base::FilePath& temp_dir,
-                        base::FilePath* path) {
-  (void) extension;
-  (void) temp_dir;
-  (void) path;
+                        base::FilePath* path,
+                        std::string* bg_page) {
+  // Decodes extension string.
+  // Some WebDriver client base64 encoders follow RFC 1521, which require that
+  // 'encoded lines be no more than 76 characters long'. Just remove any
+  // newlines.
+  std::string extension_base64;
+  base::RemoveChars(extension, "\n", &extension_base64);
+  std::string decoded_extension;
+  if (!base::Base64Decode(extension_base64, &decoded_extension))
+    return Status(kUnknownError, "cannot base64 decode");
 
+  // If the file is a crx file, extract the extension's ID from its public key.
+  // Otherwise generate a random public key and use its derived extension ID.
+  std::string public_key;
+  std::string magic_header = decoded_extension.substr(0, 4);
+  if (magic_header.size() != 4)
+    return Status(kUnknownError, "cannot extract magic number");
+
+  const bool is_crx_file = magic_header == "Cr24";
+
+  if (is_crx_file) {
+    // Assume a CRX v2 file - see https://developer.chrome.com/extensions/crx.
+    std::string key_len_str = decoded_extension.substr(8, 4);
+    if (key_len_str.size() != 4)
+      return Status(kUnknownError, "cannot extract public key length");
+    uint32_t key_len = *reinterpret_cast<const uint32_t*>(key_len_str.c_str());
+    public_key = decoded_extension.substr(16, key_len);
+    if (key_len != public_key.size())
+      return Status(kUnknownError, "invalid public key length");
+  } else {
+    // Not a CRX file. Generate RSA keypair to get a valid extension id.
+    scoped_ptr<crypto::RSAPrivateKey> key_pair(
+        crypto::RSAPrivateKey::Create(2048));
+    if (!key_pair)
+      return Status(kUnknownError, "cannot generate RSA key pair");
+    std::vector<uint8_t> public_key_vector;
+    if (!key_pair->ExportPublicKey(&public_key_vector))
+      return Status(kUnknownError, "cannot extract public key");
+    public_key =
+        std::string(reinterpret_cast<char*>(&public_key_vector.front()),
+                    public_key_vector.size());
+  }
+  std::string public_key_base64;
+  base::Base64Encode(public_key, &public_key_base64);
+  std::string id = GenerateExtensionId(public_key);
+
+  // Unzip the crx file.
+  base::ScopedTempDir temp_crx_dir;
+  if (!temp_crx_dir.CreateUniqueTempDir())
+    return Status(kUnknownError, "cannot create temp dir");
+  base::FilePath extension_crx = temp_crx_dir.path().AppendASCII("temp.crx");
+  int size = static_cast<int>(decoded_extension.length());
+  if (base::WriteFile(extension_crx, decoded_extension.c_str(), size) !=
+      size) {
+    return Status(kUnknownError, "cannot write file");
+  }
+  base::FilePath extension_dir = temp_dir.AppendASCII("extension_" + id);
+  if (!zip::Unzip(extension_crx, extension_dir))
+    return Status(kUnknownError, "cannot unzip");
+
+  // Parse the manifest and set the 'key' if not already present.
+  base::FilePath manifest_path(extension_dir.AppendASCII("manifest.json"));
+  std::string manifest_data;
+  if (!base::ReadFileToString(manifest_path, &manifest_data))
+    return Status(kUnknownError, "cannot read manifest");
+  scoped_ptr<base::Value> manifest_value =
+      base::JSONReader::Read(manifest_data);
+  base::DictionaryValue* manifest;
+  if (!manifest_value || !manifest_value->GetAsDictionary(&manifest))
+    return Status(kUnknownError, "invalid manifest");
+
+  std::string manifest_key_base64;
+  if (manifest->GetString("key", &manifest_key_base64)) {
+    // If there is a key in both the header and the manifest, use the key in the
+    // manifest. This allows xwalkdriver users users who generate dummy crxs
+    // to set the manifest key and have a consistent ID.
+    std::string manifest_key;
+    if (!base::Base64Decode(manifest_key_base64, &manifest_key))
+      return Status(kUnknownError, "'key' in manifest is not base64 encoded");
+    std::string manifest_id = GenerateExtensionId(manifest_key);
+    if (id != manifest_id) {
+      if (is_crx_file) {
+        LOG(WARNING)
+            << "Public key in crx header is different from key in manifest"
+            << std::endl << "key from header:   " << public_key_base64
+            << std::endl << "key from manifest: " << manifest_key_base64
+            << std::endl << "generated extension id from header key:   " << id
+            << std::endl << "generated extension id from manifest key: "
+            << manifest_id;
+      }
+      id = manifest_id;
+    }
+  } else {
+    manifest->SetString("key", public_key_base64);
+    base::JSONWriter::Write(*manifest, &manifest_data);
+    if (base::WriteFile(
+            manifest_path, manifest_data.c_str(), manifest_data.size()) !=
+        static_cast<int>(manifest_data.size())) {
+      return Status(kUnknownError, "cannot add 'key' to manifest");
+    }
+  }
+
+  // Get extension's background page URL, if there is one.
+  std::string bg_page_tmp;
+  Status status = GetExtensionBackgroundPage(manifest, id, &bg_page_tmp);
+  if (status.IsError())
+    return status;
+
+  *path = extension_dir;
+  if (bg_page_tmp.size())
+    *bg_page = bg_page_tmp;
   return Status(kOk);
 }
 
 void UpdateExtensionSwitch(Switches* switches,
                            const char name[],
                            const base::FilePath::StringType& extension) {
-  (void) switches;
-  (void) name;
-  (void) extension;
+  base::FilePath::StringType value = switches->GetSwitchValueNative(name);
+  if (value.length())
+    value += FILE_PATH_LITERAL(",");
+  value += extension;
+  switches->SetSwitch(name, value);
 }
 
 Status ProcessExtensions(const std::vector<std::string>& extensions,
                          const base::FilePath& temp_dir,
                          bool include_automation_extension,
-                         Switches* switches) {
-  (void) extensions;
-  (void) temp_dir;
-  (void) include_automation_extension;
-  (void) switches;
+                         Switches* switches,
+                         std::vector<std::string>* bg_pages) {
+  std::vector<std::string> bg_pages_tmp;
+  std::vector<base::FilePath::StringType> extension_paths;
+  for (size_t i = 0; i < extensions.size(); ++i) {
+    base::FilePath path;
+    std::string bg_page;
+    Status status = ProcessExtension(extensions[i], temp_dir, &path, &bg_page);
+    if (status.IsError()) {
+      return Status(
+          kUnknownError,
+          base::StringPrintf("cannot process extension #%" PRIuS, i + 1),
+          status);
+    }
+    extension_paths.push_back(path.value());
+    if (bg_page.length())
+      bg_pages_tmp.push_back(bg_page);
+  }
 
+  if (include_automation_extension) {
+    base::FilePath automation_extension;
+    Status status = UnpackAutomationExtension(temp_dir, &automation_extension);
+    if (status.IsError())
+      return status;
+    if (switches->HasSwitch("disable-extensions")) {
+      UpdateExtensionSwitch(switches, "load-component-extension",
+                            automation_extension.value());
+    } else {
+      extension_paths.push_back(automation_extension.value());
+    }
+  }
+
+  if (extension_paths.size()) {
+    base::FilePath::StringType extension_paths_value = base::JoinString(
+        extension_paths, base::FilePath::StringType(1, ','));
+    UpdateExtensionSwitch(switches, "load-extension", extension_paths_value);
+  }
+  bg_pages->swap(bg_pages_tmp);
   return Status(kOk);
 }
 
-Status PrepareUserDataDir(const base::FilePath& user_data_dir,
-			  const base::DictionaryValue* custom_prefs,
-			  const base::DictionaryValue* custom_local_state) {
-  (void) user_data_dir;
-  (void) custom_prefs;
-  (void) custom_local_state;
+Status WritePrefsFile(
+    const std::string& template_string,
+    const base::DictionaryValue* custom_prefs,
+    const base::FilePath& path) {
+  int code;
+  std::string error_msg;
+  scoped_ptr<base::Value> template_value = base::JSONReader::ReadAndReturnError(
+      template_string, 0, &code, &error_msg);
+  base::DictionaryValue* prefs;
+  if (!template_value || !template_value->GetAsDictionary(&prefs)) {
+    return Status(kUnknownError,
+                  "cannot parse internal JSON template: " + error_msg);
+  }
 
+  if (custom_prefs) {
+    for (base::DictionaryValue::Iterator it(*custom_prefs); !it.IsAtEnd();
+         it.Advance()) {
+      prefs->Set(it.key(), it.value().DeepCopy());
+    }
+  }
+
+  std::string prefs_str;
+  base::JSONWriter::Write(*prefs, &prefs_str);
+  VLOG(0) << "Populating " << path.BaseName().value()
+          << " file: " << PrettyPrintValue(*prefs);
+  if (static_cast<int>(prefs_str.length()) != base::WriteFile(
+          path, prefs_str.c_str(), prefs_str.length())) {
+    return Status(kUnknownError, "failed to write prefs file");
+  }
+  return Status(kOk);
+}
+
+Status PrepareUserDataDir(
+    const base::FilePath& user_data_dir,
+    const base::DictionaryValue* custom_prefs,
+    const base::DictionaryValue* custom_local_state) {
+  base::FilePath default_dir =
+      user_data_dir.AppendASCII("Default");
+  if (!base::CreateDirectory(default_dir))
+    return Status(kUnknownError, "cannot create default profile directory");
+
+  std::string preferences;
+  base::FilePath preferences_path =
+      default_dir.Append("Preferences");
+
+  if (base::PathExists(preferences_path))
+    base::ReadFileToString(preferences_path, &preferences);
+  else
+    preferences = kPreferences;
+
+  Status status =
+      WritePrefsFile(preferences,
+                     custom_prefs,
+                     default_dir.Append("Preferences"));
+  if (status.IsError())
+    return status;
+
+  std::string local_state;
+  base::FilePath local_state_path =
+      user_data_dir.Append("Local State");
+
+  if (base::PathExists(local_state_path))
+    base::ReadFileToString(local_state_path, &local_state);
+  else
+    local_state = kLocalState;
+
+  status = WritePrefsFile(local_state,
+                          custom_local_state,
+                          user_data_dir.Append("Local State"));
+  if (status.IsError())
+    return status;
+
+  // Write empty "First Run" file, otherwise Xwalk will wipe the default
+  // profile that was written.
+  if (base::WriteFile(
+          user_data_dir.Append("First Run"), "", 0) != 0) {
+    return Status(kUnknownError, "failed to write first run file");
+  }
   return Status(kOk);
 }
 

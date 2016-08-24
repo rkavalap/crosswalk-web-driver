@@ -4,27 +4,43 @@
 
 #include "xwalk/test/xwalkdriver/xwalk/xwalk_android_impl.h"
 
+#include <utility>
+
+#include "base/strings/string_split.h"
 #include "xwalk/test/xwalkdriver/net/port_server.h"
-#include "xwalk/test/xwalkdriver/xwalk/android_device.h"
-#include "xwalk/test/xwalkdriver/xwalk/device.h"
 #include "xwalk/test/xwalkdriver/xwalk/device_manager.h"
+#include "xwalk/test/xwalkdriver/xwalk/devtools_client.h"
 #include "xwalk/test/xwalkdriver/xwalk/devtools_http_client.h"
 #include "xwalk/test/xwalkdriver/xwalk/status.h"
 
 XwalkAndroidImpl::XwalkAndroidImpl(
-    scoped_ptr<DevToolsHttpClient> client,
+    scoped_ptr<DevToolsHttpClient> http_client,
+    scoped_ptr<DevToolsClient> websocket_client,
     ScopedVector<DevToolsEventListener>& devtools_event_listeners,
     scoped_ptr<PortReservation> port_reservation,
     scoped_ptr<Device> device)
-    : XwalkImpl(client.Pass(),
+    : XwalkImpl(std::move(http_client),
+                 std::move(websocket_client),
                  devtools_event_listeners,
-                 port_reservation.Pass()),
-      device_(device.Pass()) {}
+                 std::move(port_reservation)),
+      device_(std::move(device)) {}
 
 XwalkAndroidImpl::~XwalkAndroidImpl() {}
 
+Status XwalkAndroidImpl::GetAsDesktop(XwalkDesktopImpl** desktop) {
+  return Status(kUnknownError, "operation is unsupported on Android");
+}
+
 std::string XwalkAndroidImpl::GetOperatingSystemName() {
   return "ANDROID";
+}
+
+bool XwalkAndroidImpl::HasTouchScreen() const {
+  const BrowserInfo* browser_info = GetBrowserInfo();
+  if (browser_info->browser_name == "webview")
+    return browser_info->major_version >= 44;
+  else
+    return browser_info->build_no >= 2388;
 }
 
 Status XwalkAndroidImpl::QuitImpl() {

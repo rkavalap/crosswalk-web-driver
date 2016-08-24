@@ -30,7 +30,14 @@ class DevToolsEventListener {
 
   // Called when a command success response is received.
   virtual Status OnCommandSuccess(DevToolsClient* client,
-                                  const std::string& method);
+                                  const std::string& method,
+                                  const base::DictionaryValue& result);
+
+  // True if the listener should be added to the browser-wide |DevToolsClient|
+  // in addition to all webview |DevToolsClient|s. False by default. If set to
+  // true, listener can use |client|->GetId() to distinguish between browser-
+  // wide |DevToolsClient| and webview |DevToolsClient|s.
+  virtual bool subscribes_to_browser();
 };
 
 #endif  // XWALK_TEST_XWALKDRIVER_XWALK_DEVTOOLS_EVENT_LISTENER_H_

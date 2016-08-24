@@ -4,7 +4,9 @@
 
 """Writes C++ header/cc source files for embedding resources into C++."""
 
+import datetime
 import os
+import sys
 
 
 def WriteSource(base_name,
@@ -21,11 +23,17 @@ def WriteSource(base_name,
       global_string_map: Map of variable names to their string values. These
           variables will be available as globals.
   """
-  copyright = '\n'.join([
-      '// Copyright 2013 The Chromium Authors. All rights reserved.',
-      '// Use of this source code is governed by a BSD-style license that '
-          'can be',
-      '// found in the LICENSE file.'])
+  copyright_header_template = (
+      '// Copyright %s The Chromium Authors. All rights reserved.\n'
+      '// Use of this source code is governed by a BSD-style license '
+      'that can be\n'
+      '// found in the LICENSE file.\n\n'
+      '// This file was generated at (%s) by running:\n'
+      '//     %s')
+  copyright_header = copyright_header_template % (
+      datetime.date.today().year,
+      datetime.datetime.now().isoformat(' '),
+      ' '.join(sys.argv))
 
   # Write header file.
   externs = []
@@ -35,7 +43,7 @@ def WriteSource(base_name,
   temp = '_'.join(dir_from_src.split('/') + [base_name])
   define = temp.upper() + '_H_'
   header = '\n'.join([
-      copyright,
+      copyright_header,
       '',
       '#ifndef ' + define,
       '#define ' + define,
@@ -63,7 +71,7 @@ def WriteSource(base_name,
     definitions += ['const char %s[] =\n%s;' % (name, '\n'.join(lines))]
 
   cc = '\n'.join([
-      copyright,
+      copyright_header,
       '',
       '#include "%s"' % (dir_from_src + '/' + base_name + '.h'),
       '',

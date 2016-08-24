@@ -4,6 +4,8 @@
 
 #include "xwalk/test/xwalkdriver/xwalk/xwalk_finder.h"
 
+#include <stddef.h>
+
 #include <string>
 #include <vector>
 
@@ -12,6 +14,7 @@
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/macros.h"
 #include "base/path_service.h"
 #include "build/build_config.h"
 
@@ -52,14 +55,9 @@ void GetApplicationDirs(std::vector<base::FilePath>* locations) {
   locations->push_back(base::FilePath("/bin"));
   locations->push_back(base::FilePath("/sbin"));
 }
-#elif defined(OS_MACOSX)
+#elif defined(OS_ANDROID)
 void GetApplicationDirs(std::vector<base::FilePath>* locations) {
-  locations->push_back(base::FilePath("/usr/local/bin"));
-  locations->push_back(base::FilePath("/usr/local/sbin"));
-  locations->push_back(base::FilePath("/usr/bin"));
-  locations->push_back(base::FilePath("/usr/sbin"));
-  locations->push_back(base::FilePath("/bin"));
-  locations->push_back(base::FilePath("/sbin"));
+  // On Android we won't be able to find Chrome executable
 }
 #endif
 
@@ -68,7 +66,7 @@ void GetApplicationDirs(std::vector<base::FilePath>* locations) {
 namespace internal {
 
 bool FindExe(
-    const base::Callback<bool(const base::FilePath&)>& exists_func,  // NOLINT
+    const base::Callback<bool(const base::FilePath&)>& exists_func,
     const std::vector<base::FilePath>& rel_paths,
     const std::vector<base::FilePath>& locations,
     base::FilePath* out_path) {
@@ -86,8 +84,11 @@ bool FindExe(
 
 }  // namespace internal
 
-bool FindXwalk(base::FilePath* browser_exe) {
+#if defined(OS_MACOSX)
+void GetApplicationDirs(std::vector<base::FilePath>* locations);
+#endif
 
+bool FindXwalk(base::FilePath* browser_exe) {
   base::FilePath browser_exes_array[] = {
       base::FilePath("xwalk")
   };

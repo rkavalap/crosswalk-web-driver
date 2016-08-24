@@ -9,9 +9,9 @@
 #include <map>
 #include <string>
 
-#include "base/basictypes.h"
 #include "base/callback.h"
 #include "base/compiler_specific.h"
+#include "base/macros.h"
 #include "base/memory/linked_ptr.h"
 #include "base/memory/scoped_ptr.h"
 #include "url/gurl.h"
@@ -52,6 +52,12 @@ class SyncWebSocket;
 
 class DevToolsClientImpl : public DevToolsClient {
  public:
+  static const char kBrowserwideDevToolsClientId[];
+
+  DevToolsClientImpl(const SyncWebSocketFactory& factory,
+                     const std::string& url,
+                     const std::string& id);
+
   typedef base::Callback<Status()> FrontendCloserFunc;
   DevToolsClientImpl(const SyncWebSocketFactory& factory,
                      const std::string& url,
@@ -78,15 +84,19 @@ class DevToolsClientImpl : public DevToolsClient {
   const std::string& GetId() override;
   bool WasCrashed() override;
   Status ConnectIfNecessary() override;
-  Status SendCommand(const std::string& method,
-                             const base::DictionaryValue& params) override;
+  Status SendCommand(
+      const std::string& method,
+      const base::DictionaryValue& params) override;
+  Status SendAsyncCommand(
+      const std::string& method,
+      const base::DictionaryValue& params) override;
   Status SendCommandAndGetResult(
       const std::string& method,
       const base::DictionaryValue& params,
       scoped_ptr<base::DictionaryValue>* result) override;
   void AddListener(DevToolsEventListener* listener) override;
   Status HandleEventsUntil(const ConditionalFunc& conditional_func,
-      const base::TimeDelta& timeout) override;
+                           const base::TimeDelta& timeout) override;
   Status HandleReceivedEvents() override;
 
  private:
@@ -114,7 +124,8 @@ class DevToolsClientImpl : public DevToolsClient {
   Status SendCommandInternal(
       const std::string& method,
       const base::DictionaryValue& params,
-      scoped_ptr<base::DictionaryValue>* result);
+      scoped_ptr<base::DictionaryValue>* result,
+      bool wait_for_response);
   Status ProcessNextMessage(int expected_id, const base::TimeDelta& timeout);
   Status ProcessEvent(const internal::InspectorEvent& event);
   Status ProcessCommandResponse(

@@ -5,8 +5,8 @@
 #ifndef XWALK_TEST_XWALKDRIVER_NET_URL_REQUEST_CONTEXT_GETTER_H_
 #define XWALK_TEST_XWALKDRIVER_NET_URL_REQUEST_CONTEXT_GETTER_H_
 
-#include "base/basictypes.h"
 #include "base/compiler_specific.h"
+#include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_ptr.h"
 #include "net/url_request/url_request_context_getter.h"
@@ -26,7 +26,8 @@ class URLRequestContextGetter : public net::URLRequestContextGetter {
 
   // Overridden from net::URLRequestContextGetter:
   net::URLRequestContext* GetURLRequestContext() override;
-  scoped_refptr<base::SingleThreadTaskRunner> GetNetworkTaskRunner() const override;
+  scoped_refptr<base::SingleThreadTaskRunner> GetNetworkTaskRunner()
+      const override;
 
  private:
   ~URLRequestContextGetter() override;

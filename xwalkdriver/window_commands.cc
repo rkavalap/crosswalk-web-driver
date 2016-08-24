@@ -4,6 +4,8 @@
 
 #include "xwalk/test/xwalkdriver/window_commands.h"
 
+#include <stddef.h>
+
 #include <list>
 #include <string>
 
@@ -17,10 +19,13 @@
 #include "xwalk/test/xwalkdriver/element_util.h"
 #include "xwalk/test/xwalkdriver/session.h"
 #include "xwalk/test/xwalkdriver/util.h"
+#include "xwalk/test/xwalkdriver/xwalk/automation_extension.h"
+#include "xwalk/test/xwalkdriver/xwalk/browser_info.h"
 #include "xwalk/test/xwalkdriver/xwalk/devtools_client.h"
 #include "xwalk/test/xwalkdriver/xwalk/geoposition.h"
 #include "xwalk/test/xwalkdriver/xwalk/javascript_dialog_manager.h"
 #include "xwalk/test/xwalkdriver/xwalk/js.h"
+#include "xwalk/test/xwalkdriver/xwalk/network_conditions.h"
 #include "xwalk/test/xwalkdriver/xwalk/status.h"
 #include "xwalk/test/xwalkdriver/xwalk/ui_events.h"
 #include "xwalk/test/xwalkdriver/xwalk/web_view.h"
@@ -28,6 +33,8 @@
 #include "xwalk/test/xwalkdriver/xwalk/xwalk_desktop_impl.h"
 
 namespace {
+
+const std::string kUnreachableWebDataURL = "data:text/html,chromewebdata";
 
 Status GetMouseButton(const base::DictionaryValue& params,
                       MouseButton* button) {
@@ -60,16 +67,18 @@ struct Cookie {
          const std::string& domain,
          const std::string& path,
          double expiry,
+         bool http_only,
          bool secure,
          bool session)
       : name(name), value(value), domain(domain), path(path), expiry(expiry),
-        secure(secure), session(session) {}
+        http_only(http_only), secure(secure), session(session) {}
 
   std::string name;
   std::string value;
   std::string domain;
   std::string path;
   double expiry;
+  bool http_only;
   bool secure;
   bool session;
 };
@@ -84,6 +93,7 @@ base::DictionaryValue* CreateDictionaryFrom(const Cookie& cookie) {
     dict->SetString("path", cookie.path);
   if (!cookie.session)
     dict->SetDouble("expiry", cookie.expiry);
+  dict->SetBoolean("httpOnly", cookie.http_only);
   dict->SetBoolean("secure", cookie.secure);
   return dict;
 }
@@ -111,13 +121,15 @@ Status GetVisibleCookies(WebView* web_view,
     double expiry = 0;
     cookie_dict->GetDouble("expires", &expiry);
     expiry /= 1000;  // Convert from millisecond to second.
+    bool http_only = false;
+    cookie_dict->GetBoolean("httpOnly", &http_only);
     bool session = false;
     cookie_dict->GetBoolean("session", &session);
     bool secure = false;
     cookie_dict->GetBoolean("secure", &secure);
 
     cookies_tmp.push_back(
-        Cookie(name, value, domain, path, expiry, secure, session));
+        Cookie(name, value, domain, path, expiry, http_only, secure, session));
   }
   cookies->swap(cookies_tmp);
   return Status(kOk);
@@ -204,24 +216,42 @@ Status ExecuteWindowCommand(
   if (status.IsError())
     return status;
 
-  if (web_view->GetJavaScriptDialogManager()->IsDialogOpen())
-    return Status(kUnexpectedAlertOpen);
+  if (web_view->GetJavaScriptDialogManager()->IsDialogOpen()) {
+    std::string alert_text;
+    status =
+        web_view->GetJavaScriptDialogManager()->GetDialogMessage(&alert_text);
+    if (status.IsError())
+      return status;
+    return Status(kUnexpectedAlertOpen, "{Alert text : " + alert_text + "}");
+  }
 
   Status nav_status(kOk);
-  for (int attempt = 0; attempt < 2; attempt++) {
-    if (attempt == 1) {
-      if (status.code() == kNoSuchExecutionContext)
-        // Switch to main frame and retry command if subframe no longer exists.
-        session->SwitchToTopFrame();
-      else
-        break;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (attempt == 2) {
+      // Switch to main frame and retry command if subframe no longer exists.
+      session->SwitchToTopFrame();
     }
+
     nav_status = web_view->WaitForPendingNavigations(
         session->GetCurrentFrameId(), session->page_load_timeout, true);
     if (nav_status.IsError())
       return nav_status;
 
     status = command.Run(session, web_view, params, value);
+    if (status.code() == kNoSuchExecutionContext) {
+      continue;
+    } else if (status.IsError()) {
+      // If the command failed while a new page or frame started loading, retry
+      // the command after the pending navigation has completed.
+      bool is_pending = false;
+      nav_status = web_view->IsPendingNavigation(session->GetCurrentFrameId(),
+                                                 &is_pending);
+      if (nav_status.IsError())
+        return nav_status;
+      else if (is_pending)
+        continue;
+    }
+    break;
   }
 
   nav_status = web_view->WaitForPendingNavigations(
@@ -243,7 +273,11 @@ Status ExecuteGet(
   std::string url;
   if (!params.GetString("url", &url))
     return Status(kUnknownError, "'url' must be a string");
-  return web_view->Load(url);
+  Status status = web_view->Load(url);
+  if (status.IsError())
+    return status;
+  session->SwitchToTopFrame();
+  return Status(kOk);
 }
 
 Status ExecuteExecuteScript(
@@ -256,6 +290,10 @@ Status ExecuteExecuteScript(
     return Status(kUnknownError, "'script' must be a string");
   if (script == ":takeHeapSnapshot") {
     return web_view->TakeHeapSnapshot(value);
+  } else if (script == ":startProfile") {
+    return web_view->StartProfile();
+  } else if (script == ":endProfile") {
+    return web_view->EndProfile(value);
   } else {
     const base::ListValue* args;
     if (!params.GetList("args", &args))
@@ -354,18 +392,21 @@ Status ExecuteSwitchToFrame(
   return Status(kOk);
 }
 
+Status ExecuteSwitchToParentFrame(
+    Session* session,
+    WebView* web_view,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value) {
+  session->SwitchToParentFrame();
+  return Status(kOk);
+}
+
 Status ExecuteGetTitle(
     Session* session,
     WebView* web_view,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  const char kGetTitleScript[] =
-      "function() {"
-      "  if (document.title)"
-      "    return document.title;"
-      "  else"
-      "    return document.URL;"
-      "}";
+  const char kGetTitleScript[] = "function() {  return document.title;}";
   base::ListValue args;
   return web_view->CallFunction(std::string(), kGetTitleScript, args, value);
 }
@@ -409,9 +450,23 @@ Status ExecuteGetCurrentUrl(
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
   std::string url;
-  Status status = GetUrl(web_view, session->GetCurrentFrameId(), &url);
+  Status status = GetUrl(web_view, std::string(), &url);
   if (status.IsError())
     return status;
+  if (url == kUnreachableWebDataURL) {
+    // https://bugs.chromium.org/p/chromedriver/issues/detail?id=1272
+    const BrowserInfo* browser_info = session->xwalk->GetBrowserInfo();
+    bool is_kitkat_webview = browser_info->browser_name == "webview" &&
+                             browser_info->major_version <= 30 &&
+                             browser_info->is_android;
+    if (!is_kitkat_webview) {
+      // Page.getNavigationHistory isn't implemented in WebView for KitKat and
+      // older Android releases.
+      status = web_view->GetUrl(&url);
+      if (status.IsError())
+        return status;
+    }
+  }
   value->reset(new base::StringValue(url));
   return Status(kOk);
 }
@@ -421,8 +476,11 @@ Status ExecuteGoBack(
     WebView* web_view,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  return web_view->EvaluateScript(
-      std::string(), "window.history.back();", value);
+  Status status = web_view->TraverseHistory(-1);
+  if (status.IsError())
+    return status;
+  session->SwitchToTopFrame();
+  return Status(kOk);
 }
 
 Status ExecuteGoForward(
@@ -430,8 +488,11 @@ Status ExecuteGoForward(
     WebView* web_view,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  return web_view->EvaluateScript(
-      std::string(), "window.history.forward();", value);
+  Status status = web_view->TraverseHistory(1);
+  if (status.IsError())
+    return status;
+  session->SwitchToTopFrame();
+  return Status(kOk);
 }
 
 Status ExecuteRefresh(
@@ -439,7 +500,11 @@ Status ExecuteRefresh(
     WebView* web_view,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  return web_view->Reload();
+  Status status = web_view->Reload();
+  if (status.IsError())
+    return status;
+  session->SwitchToTopFrame();
+  return Status(kOk);
 }
 
 Status ExecuteMouseMoveTo(
@@ -458,22 +523,15 @@ Status ExecuteMouseMoveTo(
 
   WebPoint location;
   if (has_element) {
-    Status status = ScrollElementIntoView(
-        session, web_view, element_id, &location);
+    WebPoint offset(x_offset, y_offset);
+    Status status = ScrollElementIntoView(session, web_view, element_id,
+        has_offset ? &offset : nullptr, &location);
     if (status.IsError())
       return status;
   } else {
     location = session->mouse_position;
-  }
-
-  if (has_offset) {
-    location.Offset(x_offset, y_offset);
-  } else {
-    WebSize size;
-    Status status = GetElementSize(session, web_view, element_id, &size);
-    if (status.IsError())
-      return status;
-    location.Offset(size.width / 2, size.height / 2);
+    if (has_offset)
+      location.Offset(x_offset, y_offset);
   }
 
   std::list<MouseEvent> events;
@@ -585,6 +643,53 @@ Status ExecuteTouchMove(
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
   return ExecuteTouchEvent(session, web_view, kTouchMove, params);
+}
+
+Status ExecuteTouchScroll(
+    Session *session,
+    WebView* web_view,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value) {
+  if (session->xwalk->GetBrowserInfo()->build_no < 2286) {
+    // TODO(samuong): remove this once we stop supporting M41.
+    return Status(kUnknownCommand, "Touch scroll action requires Chrome 42+");
+  }
+  WebPoint location = session->mouse_position;
+  std::string element;
+  if (params.GetString("element", &element)) {
+    Status status = GetElementClickableLocation(
+        session, web_view, element, &location);
+    if (status.IsError())
+      return status;
+  }
+  int xoffset;
+  if (!params.GetInteger("xoffset", &xoffset))
+    return Status(kUnknownError, "'xoffset' must be an integer");
+  int yoffset;
+  if (!params.GetInteger("yoffset", &yoffset))
+    return Status(kUnknownError, "'yoffset' must be an integer");
+  return web_view->SynthesizeScrollGesture(
+      location.x, location.y, xoffset, yoffset);
+}
+
+Status ExecuteTouchPinch(
+    Session* session,
+    WebView* web_view,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value) {
+  if (session->xwalk->GetBrowserInfo()->build_no < 2286) {
+    // TODO(samuong): remove this once we stop supporting M41.
+    return Status(kUnknownCommand, "Pinch action requires Chrome 42+");
+  }
+  WebPoint location;
+  if (!params.GetInteger("x", &location.x))
+    return Status(kUnknownError, "'x' must be an integer");
+  if (!params.GetInteger("y", &location.y))
+    return Status(kUnknownError, "'y' must be an integer");
+  double scale_factor;
+  if (!params.GetDouble("scale", &scale_factor))
+    return Status(kUnknownError, "'scale' must be an integer");
+  return web_view->SynthesizePinchGesture(location.x, location.y, scale_factor);
 }
 
 Status ExecuteGetActiveElement(
@@ -736,11 +841,25 @@ Status ExecuteScreenshot(
     scoped_ptr<base::Value>* value) {
   Status status = session->xwalk->ActivateWebView(web_view->GetId());
   if (status.IsError()){
-    printf("The Crosswalk WebView Activate Status is \"%s\"\n",
-                                           status.message().c_str());
+    printf("The Crosswalk WebView Activate Status is \"%s\"\n", status.message().c_str());
+    return status;
   }
   std::string screenshot;
-  status = web_view->CaptureScreenshot(&screenshot);
+  XwalkDesktopImpl* desktop = NULL;
+  status = session->xwalk->GetAsDesktop(&desktop);
+  if (status.IsOk() && !session->force_devtools_screenshot) {
+    AutomationExtension* extension = NULL;
+    status = desktop->GetAutomationExtension(&extension);
+    if (status.IsError())
+      return status;
+    status = extension->CaptureScreenshot(&screenshot);
+    if (status.IsError()) {
+      LOG(WARNING) << "screenshot failed with extension, fallback to DevTools";
+      status = web_view->CaptureScreenshot(&screenshot);
+    }
+  } else {
+    status = web_view->CaptureScreenshot(&screenshot);
+  }
   if (status.IsError())
     return status;
 
@@ -873,6 +992,89 @@ Status ExecuteSetLocation(
   Status status = web_view->OverrideGeolocation(geoposition);
   if (status.IsOk())
     session->overridden_geoposition.reset(new Geoposition(geoposition));
+  return status;
+}
+
+Status ExecuteSetNetworkConditions(
+    Session* session,
+    WebView* web_view,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value) {
+  std::string network_name;
+  const base::DictionaryValue* conditions = NULL;
+  scoped_ptr<NetworkConditions> network_conditions(new NetworkConditions());
+  if (params.GetString("network_name", &network_name)) {
+    // Get conditions from preset list.
+    Status status = FindPresetNetwork(network_name, network_conditions.get());
+    if (status.IsError())
+      return status;
+  } else if (params.GetDictionary("network_conditions", &conditions)) {
+    // |latency| is required.
+    if (!conditions->GetDouble("latency", &network_conditions->latency))
+      return Status(kUnknownError,
+                    "invalid 'network_conditions' is missing 'latency'");
+
+    // Either |throughput| or the pair |download_throughput| and
+    // |upload_throughput| is required.
+    if (conditions->HasKey("throughput")) {
+      if (!conditions->GetDouble("throughput",
+                                 &network_conditions->download_throughput))
+        return Status(kUnknownError, "invalid 'throughput'");
+      conditions->GetDouble("throughput",
+                            &network_conditions->upload_throughput);
+    } else if (conditions->HasKey("download_throughput") &&
+               conditions->HasKey("upload_throughput")) {
+      if (!conditions->GetDouble("download_throughput",
+                                 &network_conditions->download_throughput) ||
+          !conditions->GetDouble("upload_throughput",
+                                 &network_conditions->upload_throughput))
+        return Status(kUnknownError,
+                      "invalid 'download_throughput' or 'upload_throughput'");
+    } else {
+      return Status(kUnknownError,
+                    "invalid 'network_conditions' is missing 'throughput' or "
+                    "'download_throughput'/'upload_throughput' pair");
+    }
+
+    // |offline| is optional.
+    if (conditions->HasKey("offline")) {
+      if (!conditions->GetBoolean("offline", &network_conditions->offline))
+        return Status(kUnknownError, "invalid 'offline'");
+    } else {
+      network_conditions->offline = false;
+    }
+  } else {
+    return Status(kUnknownError,
+                  "either 'network_conditions' or 'network_name' must be "
+                  "supplied");
+  }
+
+  session->overridden_network_conditions.reset(
+      network_conditions.release());
+  return web_view->OverrideNetworkConditions(
+      *session->overridden_network_conditions);
+}
+
+Status ExecuteDeleteNetworkConditions(
+    Session* session,
+    WebView* web_view,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value) {
+  // Chrome does not have any command to stop overriding network conditions, so
+  // we just override the network conditions with the "No throttling" preset.
+  NetworkConditions network_conditions;
+  // Get conditions from preset list.
+  Status status = FindPresetNetwork("No throttling", &network_conditions);
+  if (status.IsError())
+    return status;
+
+  status = web_view->OverrideNetworkConditions(network_conditions);
+  if (status.IsError())
+    return status;
+
+  // After we've successfully overridden the network conditions with
+  // "No throttling", we can delete them from |session|.
+  session->overridden_network_conditions.reset();
   return status;
 }
 

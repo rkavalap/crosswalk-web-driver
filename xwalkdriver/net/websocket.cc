@@ -4,28 +4,31 @@
 
 #include "xwalk/test/xwalkdriver/net/websocket.h"
 
+#include <stddef.h>
+#include <stdint.h>
 #include <string.h>
+#include <vector>
 
 #include "base/base64.h"
 #include "base/bind.h"
 #include "base/bind_helpers.h"
-#include "base/memory/scoped_vector.h"
+#include "base/memory/scoped_ptr.h"
 #include "base/rand_util.h"
 #include "base/sha1.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "build/build_config.h"
 #include "net/base/address_list.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
-#include "net/base/net_util.h"
 #include "net/base/sys_addrinfo.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "net/websockets/websocket_frame.h"
 
 #if defined(OS_WIN)
-#include <Winsock2.h>  // NOLINT
+#include <Winsock2.h>
 #endif
 
 namespace {
@@ -47,7 +50,7 @@ bool ResolveHost(const std::string& host, net::IPAddressNumber* address) {
         freeaddrinfo(result);
         return false;
       }
-      *address = end_point.address();
+      *address = end_point.address().bytes();
     }
   }
   freeaddrinfo(result);
@@ -78,9 +81,8 @@ void WebSocket::Connect(const net::CompletionCallback& callback) {
       return;
     }
   }
-  int port = 80;
-  base::StringToInt(url_.port(), &port);
-  net::AddressList addresses(net::IPEndPoint(address, port));
+  net::AddressList addresses(
+      net::IPEndPoint(address, static_cast<uint16_t>(url_.EffectiveIntPort())));
   net::NetLog::Source source;
   socket_.reset(new net::TCPClientSocket(addresses, NULL, source));
 
@@ -210,8 +212,8 @@ void WebSocket::OnReadDuringHandshake(const char* data, int len) {
 
   const char kMagicKey[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
   std::string websocket_accept;
-  base::Base64Encode(base::SHA1HashString(sec_key_ + kMagicKey), 
-                           &websocket_accept);
+  base::Base64Encode(base::SHA1HashString(sec_key_ + kMagicKey),
+                     &websocket_accept);
   scoped_refptr<net::HttpResponseHeaders> headers(
       new net::HttpResponseHeaders(
           net::HttpUtil::AssembleRawHeaders(
@@ -233,7 +235,7 @@ void WebSocket::OnReadDuringHandshake(const char* data, int len) {
 }
 
 void WebSocket::OnReadDuringOpen(const char* data, int len) {
-  ScopedVector<net::WebSocketFrameChunk> frame_chunks;
+  std::vector<scoped_ptr<net::WebSocketFrameChunk>> frame_chunks;
   CHECK(parser_.Decode(data, len, &frame_chunks));
   for (size_t i = 0; i < frame_chunks.size(); ++i) {
     scoped_refptr<net::IOBufferWithSize> buffer = frame_chunks[i]->data;
@@ -262,5 +264,3 @@ void WebSocket::Close(int code) {
 
   state_ = CLOSED;
 }
-
-

@@ -19,7 +19,6 @@ class DevToolsEventListener;
 namespace base {
 class DictionaryValue;
 class FilePath;
-class CommandLine;
 }
 
 class Xwalk;
@@ -32,11 +31,11 @@ class URLRequestContextGetter;
 Status LaunchXwalk(
     URLRequestContextGetter* context_getter,
     const SyncWebSocketFactory& socket_factory,
-    scoped_ptr<DeviceManager>* device_manager,
+    DeviceManager* device_manager,
     PortServer* port_server,
     PortManager* port_manager,
     const Capabilities& capabilities,
-    ScopedVector<DevToolsEventListener>& devtools_event_listeners,
+    ScopedVector<DevToolsEventListener>* devtools_event_listeners,
     scoped_ptr<Xwalk>* xwalk);
 
 namespace internal {

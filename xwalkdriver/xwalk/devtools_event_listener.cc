@@ -20,6 +20,11 @@ Status DevToolsEventListener::OnEvent(DevToolsClient* client,
 
 Status DevToolsEventListener::OnCommandSuccess(
     DevToolsClient* client,
-    const std::string& method) {
+    const std::string& method,
+    const base::DictionaryValue& result) {
   return Status(kOk);
+}
+
+bool DevToolsEventListener::subscribes_to_browser() {
+  return false;
 }

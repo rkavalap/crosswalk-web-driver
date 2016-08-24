@@ -4,28 +4,36 @@
 
 #include "xwalk/test/xwalkdriver/server/http_handler.h"
 
+#include <stddef.h>
+#include <utility>
+
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"  // For CHECK macros.
+#include "base/macros.h"
 #include "base/memory/scoped_ptr.h"
 #include "base/message_loop/message_loop.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/sys_info.h"
+#include "base/thread_task_runner_handle.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "net/server/http_server_request_info.h"
 #include "net/server/http_server_response_info.h"
+#include "url/url_util.h"
 #include "xwalk/test/xwalkdriver/alert_commands.h"
-#include "xwalk/test/xwalkdriver/capabilities.h"
 #include "xwalk/test/xwalkdriver/net/port_server.h"
 #include "xwalk/test/xwalkdriver/net/url_request_context_getter.h"
 #include "xwalk/test/xwalkdriver/session.h"
 #include "xwalk/test/xwalkdriver/session_thread_map.h"
 #include "xwalk/test/xwalkdriver/util.h"
 #include "xwalk/test/xwalkdriver/version.h"
+#include "xwalk/test/xwalkdriver/xwalk/adb_impl.h"
 #include "xwalk/test/xwalkdriver/xwalk/device_manager.h"
 #include "xwalk/test/xwalkdriver/xwalk/status.h"
 
@@ -53,6 +61,8 @@ CommandMapping::CommandMapping(HttpMethod method,
                                const Command& command)
     : method(method), path_pattern(path_pattern), command(command) {}
 
+CommandMapping::CommandMapping(const CommandMapping& other) = default;
+
 CommandMapping::~CommandMapping() {}
 
 HttpHandler::HttpHandler(const std::string& url_base)
@@ -65,6 +75,7 @@ HttpHandler::HttpHandler(
     const base::Closure& quit_func,
     const scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
     const std::string& url_base,
+    int adb_port,
     scoped_ptr<PortServer> port_server)
     : quit_func_(quit_func),
       url_base_(url_base),
@@ -73,16 +84,13 @@ HttpHandler::HttpHandler(
 #if defined(OS_MACOSX)
   base::mac::ScopedNSAutoreleasePool autorelease_pool;
 #endif
-
   context_getter_ = new URLRequestContextGetter(io_task_runner);
   socket_factory_ = CreateSyncWebSocketFactory(context_getter_.get());
-  port_server_ = port_server.Pass();
+  adb_.reset(new AdbImpl(io_task_runner, adb_port));
+  device_manager_.reset(new DeviceManager(adb_.get()));
+  port_server_ = std::move(port_server);
   port_manager_.reset(new PortManager(12000, 13000));
 
-  // Defer the initialization of device_manager_ when hits "ExecuteInitSession"
-  // on http requests. It's invoked by reset to specific DeviceManager after
-  // parsing desired capabilities other than redundancy command line switches.
-  // The lifecycle of device_manager_ sync with HttpHandler.
   CommandMapping commands[] = {
       CommandMapping(
           kPost,
@@ -94,9 +102,15 @@ HttpHandler::HttpHandler(
                          base::Bind(&ExecuteInitSession,
                                     InitSessionParams(context_getter_,
                                                       socket_factory_,
-                                                      &device_manager_,
+                                                      device_manager_.get(),
                                                       port_server_.get(),
                                                       port_manager_.get()))))),
+      CommandMapping(kGet,
+                     "sessions",
+                     base::Bind(&ExecuteGetSessions,
+                               WrapToCommand("GetSessions",
+                               base::Bind(&ExecuteGetSessionCapabilities)),
+                               &session_thread_map_)),
       CommandMapping(kGet,
                      "session/:sessionId",
                      WrapToCommand("GetSessionCapabilities",
@@ -119,6 +133,9 @@ HttpHandler::HttpHandler(
       CommandMapping(kPost,
                      "session/:sessionId/url",
                      WrapToCommand("Navigate", base::Bind(&ExecuteGet))),
+      CommandMapping(kPost,
+                     "session/:sessionId/chromium/launch_app",
+                     WrapToCommand("LaunchApp", base::Bind(&ExecuteLaunchApp))),
       CommandMapping(kGet,
                      "session/:sessionId/alert",
                      WrapToCommand("IsAlertOpen",
@@ -293,8 +310,8 @@ HttpHandler::HttpHandler(
                                    base::Bind(&ExecuteDeleteAllCookies))),
       CommandMapping(
           kGet,
-          "session/:sessionId/cookie/:name",
-          WrapToCommand("GetCookie", base::Bind(&ExecuteGetCookie))),
+	  "session/:sessionId/cookie/:name",
+	   WrapToCommand("GetCookie", base::Bind(&ExecuteGetCookie))),
       CommandMapping(
           kDelete,
           "session/:sessionId/cookie/:name",
@@ -303,6 +320,11 @@ HttpHandler::HttpHandler(
           kPost,
           "session/:sessionId/frame",
           WrapToCommand("SwitchToFrame", base::Bind(&ExecuteSwitchToFrame))),
+      CommandMapping(
+          kPost,
+          "session/:sessionId/frame/parent",
+          WrapToCommand("SwitchToParentFrame",
+                        base::Bind(&ExecuteSwitchToParentFrame))),
       CommandMapping(
           kPost,
           "session/:sessionId/window",
@@ -361,6 +383,21 @@ HttpHandler::HttpHandler(
           kPost,
           "session/:sessionId/location",
           WrapToCommand("SetGeolocation", base::Bind(&ExecuteSetLocation))),
+      CommandMapping(
+          kGet,
+          "session/:sessionId/chromium/network_conditions",
+          WrapToCommand("GetNetworkConditions",
+                        base::Bind(&ExecuteGetNetworkConditions))),
+      CommandMapping(
+          kPost,
+          "session/:sessionId/chromium/network_conditions",
+          WrapToCommand("SetNetworkConditions",
+                        base::Bind(&ExecuteSetNetworkConditions))),
+      CommandMapping(
+          kDelete,
+          "session/:sessionId/chromium/network_conditions",
+          WrapToCommand("DeleteNetworkConditions",
+                        base::Bind(&ExecuteDeleteNetworkConditions))),
       CommandMapping(
           kGet,
           "session/:sessionId/application_cache/status",
@@ -492,16 +529,19 @@ HttpHandler::HttpHandler(
                      WrapToCommand("TouchMove", base::Bind(&ExecuteTouchMove))),
       CommandMapping(kPost,
                      "session/:sessionId/touch/scroll",
-                     base::Bind(&UnimplementedCommand)),
+                     WrapToCommand("TouchScroll",
+                                   base::Bind(&ExecuteTouchScroll))),
       CommandMapping(kPost,
                      "session/:sessionId/touch/doubleclick",
-                     base::Bind(&UnimplementedCommand)),
+                     WrapToCommand("TouchDoubleTap",
+                                   base::Bind(&ExecuteTouchDoubleTap))),
       CommandMapping(kPost,
                      "session/:sessionId/touch/longclick",
-                     base::Bind(&UnimplementedCommand)),
+                     WrapToCommand("TouchLongPress",
+                                   base::Bind(&ExecuteTouchLongPress))),
       CommandMapping(kPost,
                      "session/:sessionId/touch/flick",
-                     base::Bind(&UnimplementedCommand)),
+                     WrapToCommand("TouchFlick", base::Bind(&ExecuteFlick))),
       CommandMapping(kPost,
                      "session/:sessionId/log",
                      WrapToCommand("GetLog", base::Bind(&ExecuteGetLog))),
@@ -529,6 +569,19 @@ HttpHandler::HttpHandler(
       CommandMapping(kGet,
                      "session/:sessionId/is_loading",
                      WrapToCommand("IsLoading", base::Bind(&ExecuteIsLoading))),
+      CommandMapping(kGet,
+                     "session/:sessionId/autoreport",
+                     WrapToCommand("IsAutoReporting",
+                                   base::Bind(&ExecuteIsAutoReporting))),
+      CommandMapping(kPost,
+                     "session/:sessionId/autoreport",
+                     WrapToCommand(
+                         "SetAutoReporting",
+                         base::Bind(&ExecuteSetAutoReporting))),
+      CommandMapping(kPost,
+                     "session/:sessionId/touch/pinch",
+                     WrapToCommand("TouchPinch",
+                                   base::Bind(&ExecuteTouchPinch))),
   };
   command_map_.reset(
       new CommandMap(commands, commands + arraysize(commands)));
@@ -548,7 +601,7 @@ void HttpHandler::Handle(const net::HttpServerRequestInfo& request,
     scoped_ptr<net::HttpServerResponseInfo> response(
         new net::HttpServerResponseInfo(net::HTTP_BAD_REQUEST));
     response->SetBody("unhandled request", "text/plain");
-    send_response_func.Run(response.Pass());
+    send_response_func.Run(std::move(response));
     return;
   }
 
@@ -595,7 +648,7 @@ void HttpHandler::HandleCommand(
       scoped_ptr<net::HttpServerResponseInfo> response(
           new net::HttpServerResponseInfo(net::HTTP_NOT_FOUND));
       response->SetBody("unknown command: " + trimmed_path, "text/plain");
-      send_response_func.Run(response.Pass());
+      send_response_func.Run(std::move(response));
       return;
     }
     if (internal::MatchesCommand(
@@ -612,7 +665,7 @@ void HttpHandler::HandleCommand(
       scoped_ptr<net::HttpServerResponseInfo> response(
           new net::HttpServerResponseInfo(net::HTTP_BAD_REQUEST));
       response->SetBody("missing command parameters", "text/plain");
-      send_response_func.Run(response.Pass());
+      send_response_func.Run(std::move(response));
       return;
     }
     params.MergeDictionary(body_params);
@@ -634,8 +687,8 @@ void HttpHandler::PrepareResponse(
     const std::string& session_id) {
   CHECK(thread_checker_.CalledOnValidThread());
   scoped_ptr<net::HttpServerResponseInfo> response =
-      PrepareResponseHelper(trimmed_path, status, value.Pass(), session_id);
-  send_response_func.Run(response.Pass());
+      PrepareResponseHelper(trimmed_path, status, std::move(value), session_id);
+  send_response_func.Run(std::move(response));
   if (trimmed_path == kShutdownPath)
     quit_func_.Run();
 }
@@ -649,18 +702,10 @@ scoped_ptr<net::HttpServerResponseInfo> HttpHandler::PrepareResponseHelper(
     scoped_ptr<net::HttpServerResponseInfo> response(
         new net::HttpServerResponseInfo(net::HTTP_NOT_IMPLEMENTED));
     response->SetBody("unimplemented command: " + trimmed_path, "text/plain");
-    return response.Pass();
+    return response;
   }
 
-  if (trimmed_path == internal::kNewSessionPathPattern && status.IsOk()) {
-    // Creating a session involves a HTTP request to /session, which is
-    // supposed to redirect to /session/:sessionId, which returns the
-    // session info.
-    scoped_ptr<net::HttpServerResponseInfo> response(
-        new net::HttpServerResponseInfo(net::HTTP_SEE_OTHER));
-    response->AddHeader("Location", url_base_ + "session/" + session_id);
-    return response.Pass();
-  } else if (status.IsError()) {
+  if (status.IsError()) {
     Status full_status(status);
     full_status.AddDetails(base::StringPrintf(
         "Driver info: xwalkdriver=%s,platform=%s %s %s",
@@ -686,7 +731,7 @@ scoped_ptr<net::HttpServerResponseInfo> HttpHandler::PrepareResponseHelper(
   scoped_ptr<net::HttpServerResponseInfo> response(
       new net::HttpServerResponseInfo(net::HTTP_OK));
   response->SetBody(body, "application/json; charset=utf-8");
-  return response.Pass();
+  return response;
 }
 
 namespace internal {
@@ -696,12 +741,12 @@ const char kNewSessionPathPattern[] = "session";
 bool MatchesMethod(HttpMethod command_method, const std::string& method) {
   std::string lower_method = base::ToLowerASCII(method);
   switch (command_method) {
-  case kGet:
-    return lower_method == "get";
-  case kPost:
-    return lower_method == "post" || lower_method == "put";
-  case kDelete:
-    return lower_method == "delete";
+    case kGet:
+      return lower_method == "get";
+    case kPost:
+      return lower_method == "post" || lower_method == "put";
+    case kDelete:
+      return lower_method == "delete";
   }
   return false;
 }
@@ -728,10 +773,19 @@ bool MatchesCommand(const std::string& method,
       std::string name = command_path_parts[i];
       name.erase(0, 1);
       CHECK(name.length());
+      url::RawCanonOutputT<base::char16> output;
+      url::DecodeURLEscapeSequences(
+          path_parts[i].data(), path_parts[i].length(), &output);
+      std::string decoded = base::UTF16ToASCII(
+          base::string16(output.data(), output.length()));
+      // Due to crbug.com/533361, the url decoding libraries decodes all of the
+      // % escape sequences except for %%. We need to handle this case manually.
+      // So, replacing all the instances of "%%" with "%".
+      base::ReplaceSubstringsAfterOffset(&decoded, 0 , "%%" , "%");
       if (name == "sessionId")
-        *session_id = path_parts[i];
+        *session_id = decoded;
       else
-        params.SetString(name, path_parts[i]);
+        params.SetString(name, decoded);
     } else if (command_path_parts[i] != path_parts[i]) {
       return false;
     }

@@ -7,13 +7,14 @@
 
 #include <string>
 
-#include "base/basictypes.h"
+#include "base/macros.h"
+#include "build/build_config.h"
 
 #if defined(OS_WIN)
-#include <windows.h>  // NOLINT
+#include <windows.h>
 #elif defined(OS_MACOSX)
-#include <Carbon/Carbon.h>  // NOLINT
-#include "base/mac/scoped_cftyperef.h"  // NOLINT
+#include <Carbon/Carbon.h>
+#include "base/mac/scoped_cftyperef.h"
 #endif
 
 // Restores the keyboard layout that was active at this object's creation

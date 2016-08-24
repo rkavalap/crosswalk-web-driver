@@ -4,8 +4,6 @@
 
 #include "xwalk/test/xwalkdriver/element_util.h"
 
-#include <list>
-
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -18,6 +16,7 @@
 #include "xwalk/test/xwalkdriver/xwalk/js.h"
 #include "xwalk/test/xwalkdriver/xwalk/status.h"
 #include "xwalk/test/xwalkdriver/xwalk/web_view.h"
+#include "xwalk/test/xwalkdriver/xwalk/xwalk.h"
 
 namespace {
 
@@ -27,7 +26,8 @@ bool ParseFromValue(base::Value* value, WebPoint* point) {
   base::DictionaryValue* dict_value;
   if (!value->GetAsDictionary(&dict_value))
     return false;
-  double x, y;
+  double x = 0;
+  double y = 0;
   if (!dict_value->GetDouble("x", &x) ||
       !dict_value->GetDouble("y", &y))
     return false;
@@ -40,7 +40,8 @@ bool ParseFromValue(base::Value* value, WebSize* size) {
   base::DictionaryValue* dict_value;
   if (!value->GetAsDictionary(&dict_value))
     return false;
-  double width, height;
+  double width = 0;
+  double height = 0;
   if (!dict_value->GetDouble("width", &width) ||
       !dict_value->GetDouble("height", &height))
     return false;
@@ -49,18 +50,14 @@ bool ParseFromValue(base::Value* value, WebSize* size) {
   return true;
 }
 
-base::Value* CreateValueFrom(const WebSize& size) {
-  base::DictionaryValue* dict = new base::DictionaryValue();
-  dict->SetInteger("width", size.width);
-  dict->SetInteger("height", size.height);
-  return dict;
-}
-
 bool ParseFromValue(base::Value* value, WebRect* rect) {
   base::DictionaryValue* dict_value;
   if (!value->GetAsDictionary(&dict_value))
     return false;
-  double x, y, width, height;
+  double x = 0;
+  double y = 0;
+  double width = 0;
+  double height = 0;
   if (!dict_value->GetDouble("left", &x) ||
       !dict_value->GetDouble("top", &y) ||
       !dict_value->GetDouble("width", &width) ||
@@ -107,7 +104,7 @@ Status VerifyElementClickable(
   if (status.IsError())
     return status;
   base::DictionaryValue* dict;
-  bool is_clickable;
+  bool is_clickable = false;
   if (!result->GetAsDictionary(&dict) ||
       !dict->GetBoolean("clickable", &is_clickable)) {
     return Status(kUnknownError,
@@ -341,10 +338,12 @@ Status IsElementAttributeEqualToIgnoreCase(
   if (status.IsError())
     return status;
   std::string actual_value;
-  if (result->GetAsString(&actual_value))
-    *is_equal = base::LowerCaseEqualsASCII(actual_value, attribute_value.c_str());
-  else
+  if (result->GetAsString(&actual_value)) {
+    *is_equal =
+        base::LowerCaseEqualsASCII(actual_value, attribute_value.c_str());
+  } else {
     *is_equal = false;
+  }
   return status;
 }
 
@@ -581,14 +580,21 @@ Status ScrollElementIntoView(
     Session* session,
     WebView* web_view,
     const std::string& id,
+    const WebPoint* offset,
     WebPoint* location) {
-  WebSize size;
-  Status status = GetElementSize(session, web_view, id, &size);
+  WebRect region;
+  Status status = GetElementRegion(session, web_view, id, &region);
   if (status.IsError())
     return status;
-  return ScrollElementRegionIntoView(
-      session, web_view, id, WebRect(WebPoint(0, 0), size),
+  status = ScrollElementRegionIntoView(session, web_view, id, region,
       false /* center */, std::string(), location);
+  if (status.IsError())
+    return status;
+  if (offset)
+    location->Offset(offset->x, offset->y);
+  else
+    location->Offset(region.size.width / 2, region.size.height / 2);
+  return Status(kOk);
 }
 
 Status ScrollElementRegionIntoView(

@@ -11,6 +11,7 @@
 #include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
+#include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -33,6 +34,7 @@ class HttpServerRequestInfo;
 class HttpServerResponseInfo;
 }
 
+class Adb;
 class DeviceManager;
 class PortManager;
 class PortServer;
@@ -48,6 +50,7 @@ struct CommandMapping {
   CommandMapping(HttpMethod method,
                  const std::string& path_pattern,
                  const Command& command);
+  CommandMapping(const CommandMapping& other);
   ~CommandMapping();
 
   HttpMethod method;
@@ -64,6 +67,7 @@ class HttpHandler {
   HttpHandler(const base::Closure& quit_func,
               const scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
               const std::string& url_base,
+              int adb_port,
               scoped_ptr<PortServer> port_server);
   ~HttpHandler();
 
@@ -105,6 +109,7 @@ class HttpHandler {
   SyncWebSocketFactory socket_factory_;
   SessionThreadMap session_thread_map_;
   scoped_ptr<CommandMap> command_map_;
+  scoped_ptr<Adb> adb_;
   scoped_ptr<DeviceManager> device_manager_;
   scoped_ptr<PortServer> port_server_;
   scoped_ptr<PortManager> port_manager_;

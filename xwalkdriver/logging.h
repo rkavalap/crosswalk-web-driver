@@ -7,15 +7,17 @@
 
 #include <string>
 
-#include "base/basictypes.h"
+#include "base/macros.h"
 #include "base/memory/scoped_ptr.h"
 #include "base/memory/scoped_vector.h"
 #include "base/values.h"
 #include "xwalk/test/xwalkdriver/xwalk/log.h"
 
 struct Capabilities;
+class CommandListener;
 class DevToolsEventListener;
 class ListValue;
+struct Session;
 class Status;
 
 // Accumulates WebDriver Logging API entries of a given type and minimum level.
@@ -39,11 +41,15 @@ class WebDriverLog : public Log {
   // creates and owns a new empty ListValue for further accumulation.
   scoped_ptr<base::ListValue> GetAndClearEntries();
 
+  // Finds the first error message in the log and returns it. If none exist,
+  // returns an empty string. Does not clear entries.
+  std::string GetFirstErrorMessage() const;
+
   // Translates a Log entry level into a WebDriver level and stores the entry.
   void AddEntryTimestamped(const base::Time& timestamp,
-                                   Level level,
-                                   const std::string& source,
-                                   const std::string& message) override;
+                           Level level,
+                           const std::string& source,
+                           const std::string& message) override;
 
   const std::string& type() const;
   void set_min_level(Level min_level);
@@ -60,9 +66,12 @@ class WebDriverLog : public Log {
 // Initializes logging system for XwalkDriver. Returns true on success.
 bool InitLogging();
 
-// Creates Log's and DevToolsEventListener's based on logging preferences.
+// Creates |Log|s, |DevToolsEventListener|s, and |CommandListener|s based on
+// logging preferences.
 Status CreateLogs(const Capabilities& capabilities,
+                  const Session* session,
                   ScopedVector<WebDriverLog>* out_logs,
-                  ScopedVector<DevToolsEventListener>* out_listeners);
+                  ScopedVector<DevToolsEventListener>* out_devtools_listeners,
+                  ScopedVector<CommandListener>* out_command_listeners);
 
 #endif  // XWALK_TEST_XWALKDRIVER_LOGGING_H_

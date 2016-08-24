@@ -26,6 +26,7 @@ def main():
 
   version = open(options.version_file, 'r').read().strip()
   revision = lastchange.FetchVersionInfo(None).revision
+
   if revision:
     version += '.' + revision.strip()
 

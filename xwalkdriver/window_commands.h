@@ -60,6 +60,13 @@ Status ExecuteSwitchToFrame(
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value);
 
+// Change focus to the parent frame.
+Status ExecuteSwitchToParentFrame(
+    Session* session,
+    WebView* web_view,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value);
+
 // Get the current page title.
 Status ExecuteGetTitle(
     Session* session,
@@ -169,6 +176,19 @@ Status ExecuteTouchUp(
 
 // Touch move at a given coordinate.
 Status ExecuteTouchMove(
+    Session* session,
+    WebView* web_view,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value);
+
+// Do a swipe (scroll) gesture beginning at the element.
+Status ExecuteTouchScroll(
+    Session *session,
+    WebView* web_view,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value);
+
+Status ExecuteTouchPinch(
     Session* session,
     WebView* web_view,
     const base::DictionaryValue& params,
@@ -285,6 +305,18 @@ Status ExecuteDeleteAllCookies(
     scoped_ptr<base::Value>* value);
 
 Status ExecuteSetLocation(
+    Session* session,
+    WebView* web_view,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value);
+
+Status ExecuteSetNetworkConditions(
+    Session* session,
+    WebView* web_view,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value);
+
+Status ExecuteDeleteNetworkConditions(
     Session* session,
     WebView* web_view,
     const base::DictionaryValue& params,

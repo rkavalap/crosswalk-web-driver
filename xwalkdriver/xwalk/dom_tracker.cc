@@ -4,6 +4,8 @@
 
 #include "xwalk/test/xwalkdriver/xwalk/dom_tracker.h"
 
+#include <stddef.h>
+
 #include <utility>
 
 #include "base/json/json_writer.h"

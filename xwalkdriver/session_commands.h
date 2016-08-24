@@ -24,18 +24,18 @@ struct Session;
 class Status;
 class URLRequestContextGetter;
 
-
 struct InitSessionParams {
   InitSessionParams(scoped_refptr<URLRequestContextGetter> context_getter,
                     const SyncWebSocketFactory& socket_factory,
-                    scoped_ptr<DeviceManager>* device_manager,
+                    DeviceManager* device_manager,
                     PortServer* port_server,
                     PortManager* port_manager);
+  InitSessionParams(const InitSessionParams& other);
   ~InitSessionParams();
 
   scoped_refptr<URLRequestContextGetter> context_getter;
   SyncWebSocketFactory socket_factory;
-  scoped_ptr<DeviceManager>* device_manager;
+  DeviceManager* device_manager;
   PortServer* port_server;
   PortManager* port_manager;
 };
@@ -109,7 +109,17 @@ Status ExecuteIsLoading(
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value);
 
+Status ExecuteLaunchApp(
+    Session* session,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value);
+
 Status ExecuteGetLocation(
+    Session* session,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value);
+
+Status ExecuteGetNetworkConditions(
     Session* session,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value);
@@ -154,7 +164,17 @@ Status ExecuteUploadFile(
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value);
 
+Status ExecuteIsAutoReporting(
+    Session* session,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value);
+
 Status ExecuteGetBrowserOrientation(
+    Session* session,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value);
+
+Status ExecuteSetAutoReporting(
     Session* session,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value);

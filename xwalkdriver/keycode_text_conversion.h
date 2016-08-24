@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/strings/string16.h"
+#include "build/build_config.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 // These functions only support conversion of characters in the BMP
@@ -29,7 +30,11 @@ bool ConvertKeyCodeToText(ui::KeyboardCode key_code,
 // it will be set to the empty string.
 bool ConvertCharToKeyCode(base::char16 key,
                           ui::KeyboardCode* key_code,
-                          int *necessary_modifiers,  // NOLINT
+                          int *necessary_modifiers,
                           std::string* error_msg);
+
+#if defined(OS_WIN)
+bool SwitchToUSKeyboardLayout();
+#endif
 
 #endif  // XWALK_TEST_XWALKDRIVER_KEYCODE_TEXT_CONVERSION_H_

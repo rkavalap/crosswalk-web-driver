@@ -35,6 +35,8 @@ class SessionNotCreatedException(XwalkDriverException):
   pass
 class NoSuchSession(XwalkDriverException):
   pass
+class UnexpectedAlertOpen(XwalkDriverException):
+  pass
 
 def _ExceptionForResponse(response):
   exception_class_map = {
@@ -48,6 +50,7 @@ def _ExceptionForResponse(response):
     19: XPathLookupError,
     23: NoSuchWindow,
     24: InvalidCookieDomain,
+    26: UnexpectedAlertOpen,
     28: ScriptTimeout,
     32: InvalidSelector,
     33: SessionNotCreatedException
@@ -61,20 +64,38 @@ class XwalkDriver(object):
   """Starts and controls a single Xwalk instance on this machine."""
 
   def __init__(self, server_url, xwalk_binary=None, android_package=None,
-               xwalk_switches=None, xwalk_extensions=None,
-               xwalk_log_path=None, debugger_address=None,
-               browser_log_level=None):
+               android_activity=None, android_process=None,
+               android_use_running_app=None, xwalk_switches=None,
+               xwalk_extensions=None, xwalk_log_path=None,
+               debugger_address=None, logging_prefs=None,
+               mobile_emulation=None, experimental_options=None,
+               download_dir=None):
     self._executor = command_executor.CommandExecutor(server_url)
 
     options = {}
+
+    if experimental_options:
+      assert isinstance(experimental_options, dict)
+      options = experimental_options.copy()
+
     if android_package:
       options['androidPackage'] = android_package
+      if android_activity:
+        options['androidActivity'] = android_activity
+      if android_process:
+        options['androidProcess'] = android_process
+      if android_use_running_app:
+        options['androidUseRunningApp'] = android_use_running_app
     elif xwalk_binary:
       options['binary'] = xwalk_binary
 
     if xwalk_switches:
       assert type(xwalk_switches) is list
       options['args'] = xwalk_switches
+
+    if mobile_emulation:
+      assert type(mobile_emulation) is dict
+      options['mobileEmulation'] = mobile_emulation
 
     if xwalk_extensions:
       assert type(xwalk_extensions) is list
@@ -88,11 +109,23 @@ class XwalkDriver(object):
       assert type(debugger_address) is str
       options['debuggerAddress'] = debugger_address
 
-    logging_prefs = {}
-    log_levels = ['ALL', 'DEBUG', 'INFO', 'WARNING', 'SEVERE', 'OFF']
-    if browser_log_level:
-      assert browser_log_level in log_levels
-      logging_prefs['browser'] = browser_log_level
+    if logging_prefs:
+      assert type(logging_prefs) is dict
+      log_types = ['client', 'driver', 'browser', 'server', 'performance']
+      log_levels = ['ALL', 'DEBUG', 'INFO', 'WARNING', 'SEVERE', 'OFF']
+      for log_type, log_level in logging_prefs.iteritems():
+        assert log_type in log_types
+        assert log_level in log_levels
+    else:
+      logging_prefs = {}
+
+    download_prefs = {}
+    if download_dir:
+      if 'prefs' not in options:
+        options['prefs'] = {}
+      if 'download' not in options['prefs']:
+        options['prefs']['download'] = {}
+      options['prefs']['download']['default_directory'] = download_dir
 
     params = {
       'desiredCapabilities': {
@@ -101,8 +134,9 @@ class XwalkDriver(object):
       }
     }
 
-    self._session_id = self._ExecuteCommand(
-        Command.NEW_SESSION, params)['sessionId']
+    response = self._ExecuteCommand(Command.NEW_SESSION, params)
+    self._session_id = response['sessionId']
+    self.capabilities = self._UnwrapValue(response['value'])
 
   def _WrapValue(self, value):
     """Wrap value from client side for xwalkdriver side."""
@@ -161,6 +195,9 @@ class XwalkDriver(object):
   def Load(self, url):
     self.ExecuteCommand(Command.GET, {'url': url})
 
+  def LaunchApp(self, app_id):
+    self.ExecuteCommand(Command.LAUNCH_APP, {'id': app_id})
+
   def ExecuteScript(self, script, *args):
     converted_args = list(args)
     return self.ExecuteCommand(
@@ -180,6 +217,12 @@ class XwalkDriver(object):
 
   def SwitchToMainFrame(self):
     self.SwitchToFrame(None)
+
+  def SwitchToParentFrame(self):
+    self.ExecuteCommand(Command.SWITCH_TO_PARENT_FRAME)
+
+  def GetSessions(self):
+    return self.ExecuteCommand(Command.GET_SESSIONS)
 
   def GetTitle(self):
     return self.ExecuteCommand(Command.GET_TITLE)
@@ -242,8 +285,28 @@ class XwalkDriver(object):
   def TouchMove(self, x, y):
     self.ExecuteCommand(Command.TOUCH_MOVE, {'x': x, 'y': y})
 
+  def TouchScroll(self, element, xoffset, yoffset):
+    params = {'element': element._id, 'xoffset': xoffset, 'yoffset': yoffset}
+    self.ExecuteCommand(Command.TOUCH_SCROLL, params)
+
+  def TouchFlick(self, element, xoffset, yoffset, speed):
+    params = {
+        'element': element._id,
+        'xoffset': xoffset,
+        'yoffset': yoffset,
+        'speed': speed
+    }
+    self.ExecuteCommand(Command.TOUCH_FLICK, params)
+
+  def TouchPinch(self, x, y, scale):
+    params = {'x': x, 'y': y, 'scale': scale}
+    self.ExecuteCommand(Command.TOUCH_PINCH, params)
+
   def GetCookies(self):
     return self.ExecuteCommand(Command.GET_COOKIES)
+
+  def GetCookie(self, name):
+    return self.ExecuteCommand(Command.GET_COOKIE, {'name': name})
 
   def AddCookie(self, cookie):
     self.ExecuteCommand(Command.ADD_COOKIE, {'cookie': cookie})
@@ -303,3 +366,39 @@ class XwalkDriver(object):
 
   def GetAvailableLogTypes(self):
     return self.ExecuteCommand(Command.GET_AVAILABLE_LOG_TYPES)
+
+  def IsAutoReporting(self):
+    return self.ExecuteCommand(Command.IS_AUTO_REPORTING)
+
+  def SetAutoReporting(self, enabled):
+    self.ExecuteCommand(Command.SET_AUTO_REPORTING, {'enabled': enabled})
+
+  def SetNetworkConditions(self, latency, download_throughput,
+                           upload_throughput, offline=False):
+    # Until http://crbug.com/456324 is resolved, we'll always set 'offline' to
+    # False, as going "offline" will sever Xwalkdriver's connection to Xwalk.
+    params = {
+        'network_conditions': {
+            'offline': offline,
+            'latency': latency,
+            'download_throughput': download_throughput,
+            'upload_throughput': upload_throughput
+        }
+    }
+    self.ExecuteCommand(Command.SET_NETWORK_CONDITIONS, params)
+
+  def SetNetworkConditionsName(self, network_name):
+    self.ExecuteCommand(
+        Command.SET_NETWORK_CONDITIONS, {'network_name': network_name})
+
+  def GetNetworkConditions(self):
+    conditions = self.ExecuteCommand(Command.GET_NETWORK_CONDITIONS)
+    return {
+        'latency': conditions['latency'],
+        'download_throughput': conditions['download_throughput'],
+        'upload_throughput': conditions['upload_throughput'],
+        'offline': conditions['offline']
+    }
+
+  def DeleteNetworkConditions(self):
+    self.ExecuteCommand(Command.DELETE_NETWORK_CONDITIONS)

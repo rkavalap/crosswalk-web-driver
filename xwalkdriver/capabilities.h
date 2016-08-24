@@ -5,6 +5,8 @@
 #ifndef XWALK_TEST_XWALKDRIVER_CAPABILITIES_H_
 #define XWALK_TEST_XWALKDRIVER_CAPABILITIES_H_
 
+#include <stddef.h>
+
 #include <map>
 #include <set>
 #include <string>
@@ -15,11 +17,13 @@
 #include "base/memory/scoped_ptr.h"
 #include "base/strings/string16.h"
 #include "xwalk/test/xwalkdriver/net/net_util.h"
+#include "xwalk/test/xwalkdriver/xwalk/device_metrics.h"
+#include "xwalk/test/xwalkdriver/xwalk/devtools_http_client.h"
 #include "xwalk/test/xwalkdriver/xwalk/log.h"
 
 namespace base {
-class DictionaryValue;
 class CommandLine;
+class DictionaryValue;
 }
 
 class Status;
@@ -28,6 +32,7 @@ class Switches {
  public:
   typedef base::FilePath::StringType NativeString;
   Switches();
+  Switches(const Switches& other);
   ~Switches();
 
   void SetSwitch(const std::string& name);
@@ -59,34 +64,51 @@ class Switches {
 
 typedef std::map<std::string, Log::Level> LoggingPrefs;
 
+struct PerfLoggingPrefs {
+  PerfLoggingPrefs();
+  ~PerfLoggingPrefs();
+
+  // We must distinguish between a log domain being set by default and being
+  // explicitly set. Otherwise, |PerformanceLogger| could only handle 3 of 4
+  // possible combinations (tracing enabled/disabled + Timeline on/off).
+  enum InspectorDomainStatus {
+    kDefaultEnabled,
+    kDefaultDisabled,
+    kExplicitlyEnabled,
+    kExplicitlyDisabled
+  };
+
+  InspectorDomainStatus network;
+  InspectorDomainStatus page;
+  // TODO(samuong): Timeline was removed in blink 189656 (chromium commit
+  // position 315092) so remove this option once we stop supporting M41.
+  InspectorDomainStatus timeline;
+
+  std::string trace_categories;  // Non-empty string enables tracing.
+  int buffer_usage_reporting_interval;  // ms between trace buffer usage events.
+};
+
 struct Capabilities {
   Capabilities();
   ~Capabilities();
 
-  // Return true if existing host:port session is to be used.
-  bool IsExistingBrowser() const;
+  // Return true if remote host:port session is to be used.
+  bool IsRemoteBrowser() const;
 
   // Return true if android package is specified.
   bool IsAndroid() const;
 
-  // Return true if tizen app id is specified.
-  bool IsTizen() const;
-
   Status Parse(const base::DictionaryValue& desired_caps);
 
-  // Platform specific features
   std::string android_activity;
+
+  std::string android_device_serial;
 
   std::string android_package;
 
-  std::string tizen_app_id;
+  std::string android_process;
 
-  // Device bridge server port for device bridge client to connect
-  // e.g adb-port on android and sdb-port on tizen
-  int device_bridge_port;
-
-  // Target device serial
-  std::string device_serial;
+  bool android_use_running_app;
 
   base::FilePath binary;
 
@@ -97,6 +119,9 @@ struct Capabilities {
   // bound to XwalkDriver's process. If true, Xwalk will not quit if
   // XwalkDriver dies.
   bool detach;
+
+  // Device metrics for use in Device Emulation.
+  scoped_ptr<DeviceMetrics> device_metrics;
 
   // Set of switches which should be removed from default list when launching
   // Xwalk.
@@ -117,9 +142,13 @@ struct Capabilities {
   // If set, enable minidump for xwalk crashes and save to this directory.
   std::string minidump_path;
 
+  PerfLoggingPrefs perf_logging_prefs;
+
   scoped_ptr<base::DictionaryValue> prefs;
 
   Switches switches;
+
+  std::set<WebViewInfo::Type> window_types;
 };
 
 #endif  // XWALK_TEST_XWALKDRIVER_CAPABILITIES_H_

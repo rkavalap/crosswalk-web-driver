@@ -5,17 +5,23 @@
 #ifndef XWALK_TEST_XWALKDRIVER_XWALK_DEVTOOLS_HTTP_CLIENT_H_
 #define XWALK_TEST_XWALKDRIVER_XWALK_DEVTOOLS_HTTP_CLIENT_H_
 
+#include <stddef.h>
+
+#include <set>
 #include <string>
 #include <vector>
 
+#include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_ptr.h"
 #include "xwalk/test/xwalkdriver/net/sync_websocket_factory.h"
+#include "xwalk/test/xwalkdriver/xwalk/browser_info.h"
 
 namespace base {
 class TimeDelta;
 }
 
+struct DeviceMetrics;
 class DevToolsClient;
 class NetAddress;
 class Status;
@@ -27,16 +33,21 @@ struct WebViewInfo {
     kBackgroundPage,
     kPage,
     kWorker,
-    kOther
+    kWebView,
+    kIFrame,
+    kOther,
+    kServiceWorker
   };
 
   WebViewInfo(const std::string& id,
               const std::string& debugger_url,
               const std::string& url,
               Type type);
+  WebViewInfo(const WebViewInfo& other);
   ~WebViewInfo();
 
   bool IsFrontend() const;
+  bool IsInactiveBackgroundPage() const;
 
   std::string id;
   std::string debugger_url;
@@ -63,7 +74,9 @@ class DevToolsHttpClient {
   DevToolsHttpClient(
       const NetAddress& address,
       scoped_refptr<URLRequestContextGetter> context_getter,
-      const SyncWebSocketFactory& socket_factory);
+      const SyncWebSocketFactory& socket_factory,
+      scoped_ptr<DeviceMetrics> device_metrics,
+      scoped_ptr<std::set<WebViewInfo::Type>> window_types);
   ~DevToolsHttpClient();
 
   Status Init(const base::TimeDelta& timeout);
@@ -76,11 +89,11 @@ class DevToolsHttpClient {
 
   Status ActivateWebView(const std::string& id);
 
-  const std::string& version() const;
-  int build_no() const;
+  const BrowserInfo* browser_info();
+  const DeviceMetrics* device_metrics();
+  bool IsBrowserWindow(const WebViewInfo& view) const;
 
  private:
-  Status GetVersion(std::string* version);
   Status CloseFrontends(const std::string& for_client_id);
   bool FetchUrlAndLog(const std::string& url,
                       URLRequestContextGetter* getter,
@@ -90,17 +103,17 @@ class DevToolsHttpClient {
   SyncWebSocketFactory socket_factory_;
   std::string server_url_;
   std::string web_socket_url_prefix_;
-  std::string version_;
-  int build_no_;
+  BrowserInfo browser_info_;
+  scoped_ptr<DeviceMetrics> device_metrics_;
+  scoped_ptr<std::set<WebViewInfo::Type>> window_types_;
 
   DISALLOW_COPY_AND_ASSIGN(DevToolsHttpClient);
 };
 
+Status ParseType(const std::string& data, WebViewInfo::Type* type);
+
 namespace internal {
-Status ParseWebViewsInfo(const std::string& data,
-                         WebViewsInfo* views_info);
-Status ParseVersionInfo(const std::string& data,
-                        std::string* version);
+Status ParseWebViewsInfo(const std::string& data, WebViewsInfo* views_info);
 }  // namespace internal
 
 #endif  // XWALK_TEST_XWALKDRIVER_XWALK_DEVTOOLS_HTTP_CLIENT_H_

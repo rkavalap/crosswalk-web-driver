@@ -28,15 +28,19 @@ class StubDevToolsClient : public DevToolsClient {
   const std::string& GetId() override;
   bool WasCrashed() override;
   Status ConnectIfNecessary() override;
-  Status SendCommand(const std::string& method,
-                             const base::DictionaryValue& params) override;
+  Status SendCommand(
+      const std::string& method,
+      const base::DictionaryValue& params) override;
+  Status SendAsyncCommand(
+      const std::string& method,
+      const base::DictionaryValue& params) override;
   Status SendCommandAndGetResult(
       const std::string& method,
       const base::DictionaryValue& params,
       scoped_ptr<base::DictionaryValue>* result) override;
   void AddListener(DevToolsEventListener* listener) override;
   Status HandleEventsUntil(const ConditionalFunc& conditional_func,
-                                   const base::TimeDelta& timeout) override;
+                           const base::TimeDelta& timeout) override;
   Status HandleReceivedEvents() override;
 
  protected:

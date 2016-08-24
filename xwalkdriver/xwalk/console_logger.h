@@ -5,10 +5,8 @@
 #ifndef XWALK_TEST_XWALKDRIVER_XWALK_CONSOLE_LOGGER_H_
 #define XWALK_TEST_XWALKDRIVER_XWALK_CONSOLE_LOGGER_H_
 
-#include <string>
-
-#include "base/basictypes.h"
 #include "base/compiler_specific.h"
+#include "base/macros.h"
 #include "xwalk/test/xwalkdriver/xwalk/devtools_event_listener.h"
 
 class Log;
@@ -29,8 +27,8 @@ class ConsoleLogger : public DevToolsEventListener {
   Status OnConnected(DevToolsClient* client) override;
   // Translates an event into a log entry.
   Status OnEvent(DevToolsClient* client,
-                         const std::string& method,
-                         const base::DictionaryValue& params) override;
+                 const std::string& method,
+                 const base::DictionaryValue& params) override;
 
  private:
   Log* log_;  // The log where to create entries.

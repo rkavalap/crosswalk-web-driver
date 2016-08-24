@@ -8,8 +8,8 @@
 #include <list>
 #include <string>
 
-#include "base/basictypes.h"
 #include "base/compiler_specific.h"
+#include "base/macros.h"
 #include "xwalk/test/xwalkdriver/xwalk/devtools_event_listener.h"
 
 namespace base {
@@ -25,7 +25,7 @@ class JavaScriptDialogManager : public DevToolsEventListener {
   explicit JavaScriptDialogManager(DevToolsClient* client);
   ~JavaScriptDialogManager() override;
 
-  bool IsDialogOpen();
+  bool IsDialogOpen() const;
 
   Status GetDialogMessage(std::string* message);
 
@@ -34,8 +34,8 @@ class JavaScriptDialogManager : public DevToolsEventListener {
   // Overridden from DevToolsEventListener:
   Status OnConnected(DevToolsClient* client) override;
   Status OnEvent(DevToolsClient* client,
-                         const std::string& method,
-                         const base::DictionaryValue& params) override;
+                 const std::string& method,
+                 const base::DictionaryValue& params) override;
 
  private:
   DevToolsClient* client_;

@@ -8,8 +8,8 @@
 #include <map>
 #include <string>
 
-#include "base/basictypes.h"
 #include "base/compiler_specific.h"
+#include "base/macros.h"
 #include "xwalk/test/xwalkdriver/xwalk/devtools_event_listener.h"
 
 namespace base {
@@ -31,8 +31,8 @@ class DomTracker : public DevToolsEventListener {
   // Overridden from DevToolsEventListener:
   Status OnConnected(DevToolsClient* client) override;
   Status OnEvent(DevToolsClient* client,
-                         const std::string& method,
-                         const base::DictionaryValue& params) override;
+                 const std::string& method,
+                 const base::DictionaryValue& params) override;
 
  private:
   bool ProcessNodeList(const base::Value* nodes);

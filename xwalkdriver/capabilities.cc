@@ -10,15 +10,17 @@
 #include "base/callback.h"
 #include "base/json/string_escape.h"
 #include "base/logging.h"
-#include "base/strings/stringprintf.h"
+#include "base/macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
-#include "net/base/net_util.h"
+#include "build/build_config.h"
 #include "xwalk/test/xwalkdriver/logging.h"
+#include "xwalk/test/xwalkdriver/xwalk/mobile_device.h"
 #include "xwalk/test/xwalkdriver/xwalk/status.h"
 
 namespace {
@@ -43,6 +45,18 @@ Status ParseString(std::string* to_set,
   if (str.empty())
     return Status(kUnknownError, "cannot be empty");
   *to_set = str;
+  return Status(kOk);
+}
+
+Status ParseInterval(int* to_set,
+                     const base::Value& option,
+                     Capabilities* capabilities) {
+  int parsed_int = 0;
+  if (!option.GetAsInteger(&parsed_int))
+    return Status(kUnknownError, "must be an integer");
+  if (parsed_int <= 0)
+    return Status(kUnknownError, "must be positive");
+  *to_set = parsed_int;
   return Status(kOk);
 }
 
@@ -84,16 +98,84 @@ Status ParseLogPath(const base::Value& option, Capabilities* capabilities) {
   return Status(kOk);
 }
 
-Status ParseDeviceBridgePort(const base::Value& option,
-                             Capabilities* capabilities) {
-  if (!option.GetAsInteger(&capabilities->device_bridge_port))
-    return Status(kUnknownError, "must be a integer");
-  if (capabilities->IsTizen()) {
-    // since now, tizen smart development bridge server listen on
-    // stationary port (26099), we have no chance to choose desired
-    // port in fact.
-    capabilities->device_bridge_port = 26099;
+Status ParseDeviceName(const std::string& device_name,
+                       Capabilities* capabilities) {
+  scoped_ptr<MobileDevice> device;
+  Status status = FindMobileDevice(device_name, &device);
+
+  if (status.IsError()) {
+    return Status(kUnknownError,
+                  "'" + device_name + "' must be a valid device",
+                  status);
   }
+
+  capabilities->device_metrics.reset(device->device_metrics.release());
+  // Don't override the user agent if blank (like for notebooks).
+  if (!device->user_agent.empty())
+    capabilities->switches.SetSwitch("user-agent", device->user_agent);
+
+  return Status(kOk);
+}
+
+Status ParseMobileEmulation(const base::Value& option,
+                            Capabilities* capabilities) {
+  const base::DictionaryValue* mobile_emulation;
+  if (!option.GetAsDictionary(&mobile_emulation))
+    return Status(kUnknownError, "'mobileEmulation' must be a dictionary");
+
+  if (mobile_emulation->HasKey("deviceName")) {
+    // Cannot use any other options with deviceName.
+    if (mobile_emulation->size() > 1)
+      return Status(kUnknownError, "'deviceName' must be used alone");
+
+    std::string device_name;
+    if (!mobile_emulation->GetString("deviceName", &device_name))
+      return Status(kUnknownError, "'deviceName' must be a string");
+
+    return ParseDeviceName(device_name, capabilities);
+  }
+
+  if (mobile_emulation->HasKey("deviceMetrics")) {
+    const base::DictionaryValue* metrics;
+    if (!mobile_emulation->GetDictionary("deviceMetrics", &metrics))
+      return Status(kUnknownError, "'deviceMetrics' must be a dictionary");
+
+    int width = 0;
+    int height = 0;
+    double device_scale_factor = 0;
+    bool touch = true;
+    bool mobile = true;
+
+    if (metrics->HasKey("width") && !metrics->GetInteger("width", &width))
+      return Status(kUnknownError, "'width' must be an integer");
+
+    if (metrics->HasKey("height") && !metrics->GetInteger("height", &height))
+      return Status(kUnknownError, "'height' must be an integer");
+
+    if (metrics->HasKey("pixelRatio") &&
+        !metrics->GetDouble("pixelRatio", &device_scale_factor))
+      return Status(kUnknownError, "'pixelRatio' must be a double");
+
+    if (metrics->HasKey("touch") && !metrics->GetBoolean("touch", &touch))
+      return Status(kUnknownError, "'touch' must be a boolean");
+
+    if (metrics->HasKey("mobile") && !metrics->GetBoolean("mobile", &mobile))
+      return Status(kUnknownError, "'mobile' must be a boolean");
+
+    DeviceMetrics* device_metrics =
+        new DeviceMetrics(width, height, device_scale_factor, touch, mobile);
+    capabilities->device_metrics =
+        scoped_ptr<DeviceMetrics>(device_metrics);
+  }
+
+  if (mobile_emulation->HasKey("userAgent")) {
+    std::string user_agent;
+    if (!mobile_emulation->GetString("userAgent", &user_agent))
+      return Status(kUnknownError, "'userAgent' must be a string");
+
+    capabilities->switches.SetSwitch("user-agent", user_agent);
+  }
+
   return Status(kOk);
 }
 
@@ -210,7 +292,7 @@ Status ParseExcludeSwitches(const base::Value& option,
   return Status(kOk);
 }
 
-Status ParseUseExistingBrowser(const base::Value& option,
+Status ParseUseRemoteBrowser(const base::Value& option,
                                Capabilities* capabilities) {
   std::string server_addr;
   if (!option.GetAsString(&server_addr))
@@ -250,6 +332,70 @@ Status ParseLoggingPrefs(const base::Value& option,
   return Status(kOk);
 }
 
+Status ParseInspectorDomainStatus(
+    PerfLoggingPrefs::InspectorDomainStatus* to_set,
+    const base::Value& option,
+    Capabilities* capabilities) {
+  bool desired_value;
+  if (!option.GetAsBoolean(&desired_value))
+    return Status(kUnknownError, "must be a boolean");
+  if (desired_value)
+    *to_set = PerfLoggingPrefs::InspectorDomainStatus::kExplicitlyEnabled;
+  else
+    *to_set = PerfLoggingPrefs::InspectorDomainStatus::kExplicitlyDisabled;
+  return Status(kOk);
+}
+
+Status ParsePerfLoggingPrefs(const base::Value& option,
+                             Capabilities* capabilities) {
+  const base::DictionaryValue* perf_logging_prefs = NULL;
+  if (!option.GetAsDictionary(&perf_logging_prefs))
+    return Status(kUnknownError, "must be a dictionary");
+
+  std::map<std::string, Parser> parser_map;
+  parser_map["bufferUsageReportingInterval"] = base::Bind(&ParseInterval,
+      &capabilities->perf_logging_prefs.buffer_usage_reporting_interval);
+  parser_map["enableNetwork"] = base::Bind(
+      &ParseInspectorDomainStatus, &capabilities->perf_logging_prefs.network);
+  parser_map["enablePage"] = base::Bind(
+      &ParseInspectorDomainStatus, &capabilities->perf_logging_prefs.page);
+  parser_map["enableTimeline"] = base::Bind(
+      &ParseInspectorDomainStatus, &capabilities->perf_logging_prefs.timeline);
+  parser_map["traceCategories"] = base::Bind(
+      &ParseString, &capabilities->perf_logging_prefs.trace_categories);
+
+  for (base::DictionaryValue::Iterator it(*perf_logging_prefs); !it.IsAtEnd();
+       it.Advance()) {
+     if (parser_map.find(it.key()) == parser_map.end())
+       return Status(kUnknownError, "unrecognized performance logging "
+                     "option: " + it.key());
+     Status status = parser_map[it.key()].Run(it.value(), capabilities);
+     if (status.IsError())
+       return Status(kUnknownError, "cannot parse " + it.key(), status);
+  }
+  return Status(kOk);
+}
+
+Status ParseWindowTypes(const base::Value& option, Capabilities* capabilities) {
+  const base::ListValue* window_types = NULL;
+  if (!option.GetAsList(&window_types))
+    return Status(kUnknownError, "must be a list");
+  std::set<WebViewInfo::Type> window_types_tmp;
+  for (size_t i = 0; i < window_types->GetSize(); ++i) {
+    std::string window_type;
+    if (!window_types->GetString(i, &window_type)) {
+      return Status(kUnknownError, "each window type must be a string");
+    }
+    WebViewInfo::Type type;
+    Status status = ParseType(window_type, &type);
+    if (status.IsError())
+      return status;
+    window_types_tmp.insert(type);
+  }
+  capabilities->window_types.swap(window_types_tmp);
+  return Status(kOk);
+}
+
 Status ParseXwalkOptions(
     const base::Value& capability,
     Capabilities* capabilities) {
@@ -258,8 +404,7 @@ Status ParseXwalkOptions(
     return Status(kUnknownError, "must be a dictionary");
 
   bool is_android = xwalk_options->HasKey("androidPackage");
-  bool is_tizen = xwalk_options->HasKey("tizenAppId");
-  bool is_existing = xwalk_options->HasKey("debuggerAddress");
+  bool is_remote = xwalk_options->HasKey("debuggerAddress");
 
   std::map<std::string, Parser> parser_map;
   // Ignore 'args', 'binary' and 'extensions' capabilities by default, since the
@@ -267,27 +412,28 @@ Status ParseXwalkOptions(
   parser_map["args"] = base::Bind(&IgnoreCapability);
   parser_map["binary"] = base::Bind(&IgnoreCapability);
   parser_map["extensions"] = base::Bind(&IgnoreCapability);
+
+  parser_map["perfLoggingPrefs"] = base::Bind(&ParsePerfLoggingPrefs);
+  parser_map["windowTypes"] = base::Bind(&ParseWindowTypes);
+
   if (is_android) {
-    capabilities->device_bridge_port = 5037;
+    //capabilities->device_bridge_port = 5037;
     parser_map["androidActivity"] =
         base::Bind(&ParseString, &capabilities->android_activity);
     parser_map["androidDeviceSerial"] =
-        base::Bind(&ParseString, &capabilities->device_serial);
+        base::Bind(&ParseString, &capabilities->android_device_serial);
     parser_map["androidPackage"] =
         base::Bind(&ParseString, &capabilities->android_package);
-    parser_map["adb-port"] = base::Bind(&ParseDeviceBridgePort);
+    //parser_map["adb-port"] = base::Bind(&ParseDeviceBridgePort);
+    parser_map["androidProcess"] =
+        base::Bind(&ParseString, &capabilities->android_process);
+    parser_map["androidUseRunningApp"] =
+        base::Bind(&ParseBoolean, &capabilities->android_use_running_app);
     parser_map["args"] = base::Bind(&ParseSwitches);
+    parser_map["excludeSwitches"] = base::Bind(&ParseExcludeSwitches);
     parser_map["loadAsync"] = base::Bind(&IgnoreDeprecatedOption, "loadAsync");
-  } else if (is_tizen) {
-    capabilities->device_bridge_port = 26099;
-    parser_map["tizenDebuggerAddress"] = base::Bind(&ParseUseExistingBrowser);
-    parser_map["tizenAppId"] =
-        base::Bind(&ParseString, &capabilities->tizen_app_id);
-    parser_map["tizenDeviceSerial"] =
-        base::Bind(&ParseString, &capabilities->device_serial);
-    parser_map["sdb-port"] = base::Bind(&ParseDeviceBridgePort);
-  } else if (is_existing) {
-    parser_map["debuggerAddress"] = base::Bind(&ParseUseExistingBrowser);
+  } else if (is_remote) {
+    parser_map["debuggerAddress"] = base::Bind(&ParseUseRemoteBrowser);
   } else {
     parser_map["args"] = base::Bind(&ParseSwitches);
     parser_map["binary"] = base::Bind(&ParseFilePath, &capabilities->binary);
@@ -302,6 +448,7 @@ Status ParseXwalkOptions(
     parser_map["logPath"] = base::Bind(&ParseLogPath);
     parser_map["minidumpPath"] =
         base::Bind(&ParseString, &capabilities->minidump_path);
+    parser_map["mobileEmulation"] = base::Bind(&ParseMobileEmulation);
     parser_map["prefs"] = base::Bind(&ParseDict, &capabilities->prefs);
   }
 
@@ -321,6 +468,8 @@ Status ParseXwalkOptions(
 }  // namespace
 
 Switches::Switches() {}
+
+Switches::Switches(const Switches& other) = default;
 
 Switches::~Switches() {}
 
@@ -427,8 +576,18 @@ std::string Switches::ToString() const {
   return str;
 }
 
+PerfLoggingPrefs::PerfLoggingPrefs()
+    : network(InspectorDomainStatus::kDefaultEnabled),
+      page(InspectorDomainStatus::kDefaultEnabled),
+      timeline(InspectorDomainStatus::kDefaultDisabled),
+      trace_categories(),
+      buffer_usage_reporting_interval(1000) {}
+
+PerfLoggingPrefs::~PerfLoggingPrefs() {}
+
 Capabilities::Capabilities()
-    : detach(false),
+    : android_use_running_app(false),
+      detach(false),
       force_devtools_screenshot(false) {}
 
 Capabilities::~Capabilities() {}
@@ -437,12 +596,8 @@ bool Capabilities::IsAndroid() const {
   return !android_package.empty();
 }
 
-bool Capabilities::IsExistingBrowser() const {
-  return !IsAndroid() && !IsTizen() && debugger_address.IsValid();
-}
-
-bool Capabilities::IsTizen() const {
-  return !tizen_app_id.empty();
+bool Capabilities::IsRemoteBrowser() const {
+  return debugger_address.IsValid();
 }
 
 Status Capabilities::Parse(const base::DictionaryValue& desired_caps) {
@@ -460,6 +615,17 @@ Status Capabilities::Parse(const base::DictionaryValue& desired_caps) {
         return Status(
             kUnknownError, "cannot parse capability: " + it->first, status);
       }
+    }
+  }
+  // Perf log must be enabled if perf log prefs are specified; otherwise, error.
+  LoggingPrefs::const_iterator iter = logging_prefs.find(
+      WebDriverLog::kPerformanceType);
+  if (iter == logging_prefs.end() || iter->second == Log::kOff) {
+    const base::DictionaryValue* xwalk_options = NULL;
+    if (desired_caps.GetDictionary("xwalkOptions", &xwalk_options) &&
+        xwalk_options->HasKey("perfLoggingPrefs")) {
+      return Status(kUnknownError, "perfLoggingPrefs specified, "
+                    "but performance logging was not enabled");
     }
   }
   return Status(kOk);

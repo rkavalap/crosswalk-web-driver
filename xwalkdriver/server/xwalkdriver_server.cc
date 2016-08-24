@@ -2,9 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <locale>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/at_exit.h"
@@ -14,6 +17,7 @@
 #include "base/files/file_path.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
+#include "base/macros.h"
 #include "base/memory/scoped_ptr.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
@@ -25,6 +29,7 @@
 #include "base/thread_task_runner_handle.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_local.h"
+#include "build/build_config.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
 #include "net/server/http_server.h"
@@ -53,14 +58,14 @@ class HttpServer : public net::HttpServer::Delegate {
 
   ~HttpServer() override {}
 
-  bool Start(int port, bool allow_remote) {
+  bool Start(uint16_t port, bool allow_remote) {
     std::string binding_ip = kLocalHostAddress;
     if (allow_remote)
       binding_ip = "0.0.0.0";
     scoped_ptr<net::ServerSocket> server_socket(
         new net::TCPServerSocket(NULL, net::NetLog::Source()));
     server_socket->ListenWithAddressAndPort(binding_ip, port, 1);
-    server_.reset(new net::HttpServer(server_socket.Pass(), this));
+    server_.reset(new net::HttpServer(std::move(server_socket), this));
     net::IPEndPoint address;
     return server_->GetLocalAddress(&address) == net::OK;
   }
@@ -71,7 +76,7 @@ class HttpServer : public net::HttpServer::Delegate {
     server_->SetReceiveBufferSize(connection_id, kBufferSize);
   }
   void OnHttpRequest(int connection_id,
-                             const net::HttpServerRequestInfo& info) override {
+                     const net::HttpServerRequestInfo& info) override {
     handle_request_func_.Run(
         info,
         base::Bind(&HttpServer::OnResponse,
@@ -79,7 +84,7 @@ class HttpServer : public net::HttpServer::Delegate {
                    connection_id));
   }
   void OnWebSocketRequest(int connection_id,
-      const net::HttpServerRequestInfo& info) override {}
+                          const net::HttpServerRequestInfo& info) override {}
   void OnWebSocketMessage(int connection_id, const std::string& data) override {
   }
   void OnClose(int connection_id) override {}
@@ -92,7 +97,8 @@ class HttpServer : public net::HttpServer::Delegate {
     // the connection to close (e.g., python 2.7 urllib).
     response->AddHeader("Connection", "close");
     server_->SendResponse(connection_id, *response);
-    server_->Close(connection_id);
+    // Don't need to call server_->Close(), since SendResponse() will handle
+    // this for us.
   }
 
   HttpRequestHandlerFunc handle_request_func_;
@@ -122,7 +128,7 @@ void HandleRequestOnCmdThread(
       scoped_ptr<net::HttpServerResponseInfo> response(
           new net::HttpServerResponseInfo(net::HTTP_UNAUTHORIZED));
       response->SetBody("Unauthorized access", "text/plain");
-      send_response_func.Run(response.Pass());
+      send_response_func.Run(std::move(response));
       return;
     }
   }
@@ -136,12 +142,10 @@ void HandleRequestOnIOThread(
     const net::HttpServerRequestInfo& request,
     const HttpResponseSenderFunc& send_response_func) {
   cmd_task_runner->PostTask(
-      FROM_HERE,
-      base::Bind(handle_request_on_cmd_func,
-                 request,
-                 base::Bind(&SendResponseOnCmdThread,
-                            base::ThreadTaskRunnerHandle::Get(),
-                            send_response_func)));
+      FROM_HERE, base::Bind(handle_request_on_cmd_func, request,
+                            base::Bind(&SendResponseOnCmdThread,
+                                       base::ThreadTaskRunnerHandle::Get(),
+                                       send_response_func)));
 }
 
 base::LazyInstance<base::ThreadLocalPointer<HttpServer> >
@@ -154,7 +158,7 @@ void StopServerOnIOThread() {
   delete server;
 }
 
-void StartServerOnIOThread(int port,
+void StartServerOnIOThread(uint16_t port,
                            bool allow_remote,
                            const HttpRequestHandlerFunc& handle_request_func) {
   scoped_ptr<HttpServer> temp_server(new HttpServer(handle_request_func));
@@ -165,10 +169,11 @@ void StartServerOnIOThread(int port,
   lazy_tls_server.Pointer()->Set(temp_server.release());
 }
 
-void RunServer(int port,
+void RunServer(uint16_t port,
                bool allow_remote,
                const std::vector<std::string>& whitelisted_ips,
                const std::string& url_base,
+               int adb_port,
                scoped_ptr<PortServer> port_server) {
   base::Thread io_thread("XwalkDriver IO");
   CHECK(io_thread.StartWithOptions(
@@ -176,21 +181,16 @@ void RunServer(int port,
 
   base::MessageLoop cmd_loop;
   base::RunLoop cmd_run_loop;
-  HttpHandler handler(cmd_run_loop.QuitClosure(),
-                      io_thread.task_runner(),
-                      url_base,
-                      port_server.Pass());
+  HttpHandler handler(cmd_run_loop.QuitClosure(), io_thread.task_runner(),
+                      url_base, adb_port, std::move(port_server));
   HttpRequestHandlerFunc handle_request_func =
       base::Bind(&HandleRequestOnCmdThread, &handler, whitelisted_ips);
 
-  io_thread.message_loop()
-      ->PostTask(FROM_HERE,
-                 base::Bind(&StartServerOnIOThread,
-                            port,
-                            allow_remote,
-                            base::Bind(&HandleRequestOnIOThread,
-                                       cmd_loop.task_runner(),
-                                       handle_request_func)));
+  io_thread.message_loop()->PostTask(
+      FROM_HERE,
+      base::Bind(&StartServerOnIOThread, port, allow_remote,
+                 base::Bind(&HandleRequestOnIOThread, cmd_loop.task_runner(),
+                            handle_request_func)));
   // Run the command loop. This loop is quit after the response for a shutdown
   // request is posted to the IO loop. After the command loop quits, a task
   // is posted to the IO loop to stop the server. Lastly, the IO thread is
@@ -217,7 +217,8 @@ int main(int argc, char *argv[]) {
 #endif
 
   // Parse command line flags.
-  int port = 9515;
+  uint16_t port = 9515;
+  int adb_port = 5037;
   bool allow_remote = false;
   std::vector<std::string> whitelisted_ips;
   std::string url_base;
@@ -226,6 +227,7 @@ int main(int argc, char *argv[]) {
     std::string options;
     const char* const kOptionAndDescriptions[] = {
         "port=PORT", "port to listen on",
+        "adb-port=PORT", "adb server port",
         "log-path=FILE", "write server log to file instead of stderr, "
             "increases log level to INFO",
         "verbose", "log verbosely",
@@ -249,8 +251,19 @@ int main(int argc, char *argv[]) {
     return 0;
   }
   if (cmd_line->HasSwitch("port")) {
-    if (!base::StringToInt(cmd_line->GetSwitchValueASCII("port"), &port)) {
+    int cmd_line_port;
+    if (!base::StringToInt(cmd_line->GetSwitchValueASCII("port"),
+                           &cmd_line_port) ||
+        cmd_line_port < 0 || cmd_line_port > 65535) {
       printf("Invalid port. Exiting...\n");
+      return 1;
+    }
+    port = static_cast<uint16_t>(cmd_line_port);
+  }
+  if (cmd_line->HasSwitch("adb-port")) {
+    if (!base::StringToInt(cmd_line->GetSwitchValueASCII("adb-port"),
+                           &adb_port)) {
+      printf("Invalid adb-port. Exiting...\n");
       return 1;
     }
   }
@@ -272,9 +285,9 @@ int main(int argc, char *argv[]) {
   }
   if (cmd_line->HasSwitch("url-base"))
     url_base = cmd_line->GetSwitchValueASCII("url-base");
-  if (url_base.empty() || url_base[0] != '/')
+  if (url_base.empty() || url_base.front() != '/')
     url_base = "/" + url_base;
-  if (url_base[url_base.length() - 1] != '/')
+  if (url_base.back() != '/')
     url_base = url_base + "/";
   if (cmd_line->HasSwitch("whitelisted-ips")) {
     allow_remote = true;
@@ -283,16 +296,15 @@ int main(int argc, char *argv[]) {
         whitelist, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
   }
   if (!cmd_line->HasSwitch("silent")) {
-    printf("Starting XwalkDriver (v%s) on port %d\n",
-        kXwalkDriverVersion, port);
-	if (!allow_remote) {
-	  printf("Only local connections are allowed.\n");
-	} else if (!whitelisted_ips.empty()) {
-	  printf("Remote connections are allowed by a whitelist (%s).\n",
-		     cmd_line->GetSwitchValueASCII("whitelisted-ips").c_str());
-	} else {
-	  printf("All remote connections are allowed. Use a whitelist instead!\n");
-	}
+    printf("Starting XwalkDriver (v%s) on port %d\n", kXwalkDriverVersion, port);
+    if (!allow_remote) {
+      printf("Only local connections are allowed.\n");
+    } else if (!whitelisted_ips.empty()) {
+      printf("Remote connections are allowed by a whitelist (%s).\n",
+             cmd_line->GetSwitchValueASCII("whitelisted-ips").c_str());
+    } else {
+      printf("All remote connections are allowed. Use a whitelist instead!\n");
+    }
     fflush(stdout);
   }
 
@@ -300,7 +312,7 @@ int main(int argc, char *argv[]) {
     printf("Unable to initialize logging. Exiting...\n");
     return 1;
   }
-  RunServer(port, allow_remote, whitelisted_ips,
-			url_base, port_server.Pass());
+  RunServer(port, allow_remote, whitelisted_ips, url_base, adb_port,
+            std::move(port_server));
   return 0;
 }

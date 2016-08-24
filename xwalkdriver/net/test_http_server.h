@@ -6,10 +6,9 @@
 #define XWALK_TEST_XWALKDRIVER_NET_TEST_HTTP_SERVER_H_
 
 #include <set>
-#include <string>
 
-#include "base/basictypes.h"
 #include "base/compiler_specific.h"
+#include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
@@ -40,7 +39,7 @@ class TestHttpServer : public net::HttpServer::Delegate {
   // Creates an http server. By default it accepts WebSockets and echoes
   // WebSocket messages back.
   TestHttpServer();
-  virtual ~TestHttpServer();
+  ~TestHttpServer() override;
 
   // Starts the server. Returns whether it was started successfully.
   bool Start();
@@ -58,18 +57,20 @@ class TestHttpServer : public net::HttpServer::Delegate {
   // Sets the action to perform when receiving a WebSocket message.
   void SetMessageAction(WebSocketMessageAction action);
 
+  // Sets a callback to be called once when receiving next WebSocket message.
+  void SetMessageCallback(const base::Closure& callback);
+
   // Returns the web socket URL that points to the server.
   GURL web_socket_url() const;
 
   // Overridden from net::HttpServer::Delegate:
-  virtual void OnHttpRequest(int connection_id,
-                             const net::HttpServerRequestInfo& info) override {}
-  virtual void OnWebSocketRequest(
-      int connection_id,
-      const net::HttpServerRequestInfo& info) override;
-  virtual void OnWebSocketMessage(int connection_id,
-                                  const std::string& data) override;
-  virtual void OnClose(int connection_id) override;
+  void OnConnect(int connection_id) override;
+  void OnHttpRequest(int connection_id,
+                     const net::HttpServerRequestInfo& info) override {}
+  void OnWebSocketRequest(int connection_id,
+                          const net::HttpServerRequestInfo& info) override;
+  void OnWebSocketMessage(int connection_id, const std::string& data) override;
+  void OnClose(int connection_id) override;
 
  private:
   void StartOnServerThread(bool* success, base::WaitableEvent* event);
@@ -78,7 +79,7 @@ class TestHttpServer : public net::HttpServer::Delegate {
   base::Thread thread_;
 
   // Access only on the server thread.
-  scoped_refptr<net::HttpServer> server_;
+  scoped_ptr<net::HttpServer> server_;
 
   // Access only on the server thread.
   std::set<int> connections_;
@@ -89,10 +90,11 @@ class TestHttpServer : public net::HttpServer::Delegate {
   mutable base::Lock url_lock_;
   GURL web_socket_url_;
 
-  // Protects the action flags.
+  // Protects the action flags and |message_callback_|.
   base::Lock action_lock_;
   WebSocketRequestAction request_action_;
   WebSocketMessageAction message_action_;
+  base::Closure message_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(TestHttpServer);
 };

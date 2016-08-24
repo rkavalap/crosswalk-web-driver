@@ -5,7 +5,7 @@
 #include "xwalk/test/xwalkdriver/session_commands.h"
 
 #include <list>
-#include <vector>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
@@ -14,21 +14,26 @@
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "xwalk/test/xwalkdriver/basic_types.h"
 #include "xwalk/test/xwalkdriver/capabilities.h"
+#include "xwalk/test/xwalkdriver/command_listener.h"
 #include "xwalk/test/xwalkdriver/logging.h"
 #include "xwalk/test/xwalkdriver/net/url_request_context_getter.h"
 #include "xwalk/test/xwalkdriver/session.h"
 #include "xwalk/test/xwalkdriver/util.h"
 #include "xwalk/test/xwalkdriver/version.h"
 #include "xwalk/test/xwalkdriver/xwalk_launcher.h"
+#include "xwalk/test/xwalkdriver/xwalk/automation_extension.h"
+#include "xwalk/test/xwalkdriver/xwalk/browser_info.h"
 #include "xwalk/test/xwalkdriver/xwalk/device_manager.h"
 #include "xwalk/test/xwalkdriver/xwalk/devtools_event_listener.h"
 #include "xwalk/test/xwalkdriver/xwalk/geoposition.h"
 #include "xwalk/test/xwalkdriver/xwalk/status.h"
 #include "xwalk/test/xwalkdriver/xwalk/web_view.h"
 #include "xwalk/test/xwalkdriver/xwalk/xwalk.h"
+#include "xwalk/test/xwalkdriver/xwalk/xwalk_android_impl.h"
 #include "xwalk/test/xwalkdriver/xwalk/xwalk_desktop_impl.h"
 
 namespace {
@@ -53,7 +58,7 @@ bool WindowHandleToWebViewId(const std::string& window_handle,
 InitSessionParams::InitSessionParams(
     scoped_refptr<URLRequestContextGetter> context_getter,
     const SyncWebSocketFactory& socket_factory,
-    scoped_ptr<DeviceManager>* device_manager,
+    DeviceManager* device_manager,
     PortServer* port_server,
     PortManager* port_manager)
     : context_getter(context_getter),
@@ -62,6 +67,8 @@ InitSessionParams::InitSessionParams(
       port_server(port_server),
       port_manager(port_manager) {}
 
+InitSessionParams::InitSessionParams(const InitSessionParams& other) = default;
+
 InitSessionParams::~InitSessionParams() {}
 
 namespace {
@@ -69,7 +76,7 @@ namespace {
 scoped_ptr<base::DictionaryValue> CreateCapabilities(Xwalk* xwalk) {
   scoped_ptr<base::DictionaryValue> caps(new base::DictionaryValue());
   caps->SetString("browserName", "xwalk");
-  caps->SetString("version", xwalk->GetVersion());
+  caps->SetString("version", xwalk->GetBrowserInfo()->browser_version);
   caps->SetString("xwalk.xwalkdriverVersion", kXwalkDriverVersion);
   caps->SetString("platform", xwalk->GetOperatingSystemName());
   caps->SetBoolean("javascriptEnabled", true);
@@ -78,6 +85,8 @@ scoped_ptr<base::DictionaryValue> CreateCapabilities(Xwalk* xwalk) {
   caps->SetBoolean("handlesAlerts", true);
   caps->SetBoolean("databaseEnabled", false);
   caps->SetBoolean("locationContextEnabled", true);
+  caps->SetBoolean("mobileEmulationEnabled",
+                   xwalk->IsMobileEmulationEnabled());
   caps->SetBoolean("applicationCacheEnabled", false);
   caps->SetBoolean("browserConnectionEnabled", false);
   caps->SetBoolean("cssSelectorsEnabled", true);
@@ -85,17 +94,43 @@ scoped_ptr<base::DictionaryValue> CreateCapabilities(Xwalk* xwalk) {
   caps->SetBoolean("rotatable", false);
   caps->SetBoolean("acceptSslCerts", true);
   caps->SetBoolean("nativeEvents", true);
-  scoped_ptr<base::DictionaryValue> xwalk_caps(new base::DictionaryValue());
-  if (xwalk->GetAsDesktop()) {
-    xwalk_caps->SetString(
-        "userDataDir",
-        xwalk->GetAsDesktop()->command().GetSwitchValueNative(
-            "user-data-dir"));
+  caps->SetBoolean("hasTouchScreen", xwalk->HasTouchScreen());
+
+  XwalkDesktopImpl* desktop = NULL;
+  Status status = xwalk->GetAsDesktop(&desktop);
+  if (status.IsOk()) {
+    caps->SetString("xwalk.userDataDir",
+        desktop->command().GetSwitchValueNative("user-data-dir"));
   }
-  caps->Set("xwalk", xwalk_caps.release());
-  return caps.Pass();
+
+  return caps;
 }
 
+Status CheckSessionCreated(Session* session) {
+  WebView* web_view = NULL;
+  Status status = session->GetTargetWindow(&web_view);
+  if (status.IsError())
+    return Status(kSessionNotCreatedException, status);
+
+  status = web_view->ConnectIfNecessary();
+  if (status.IsError())
+    return Status(kSessionNotCreatedException, status);
+
+  base::ListValue args;
+  scoped_ptr<base::Value> result(new base::FundamentalValue(0));
+  status = web_view->CallFunction(session->GetCurrentFrameId(),
+                                  "function(s) { return 1; }", args, &result);
+  if (status.IsError())
+    return Status(kSessionNotCreatedException, status);
+
+  int response;
+  if (!result->GetAsInteger(&response) || response != 1) {
+    return Status(kSessionNotCreatedException,
+                  "unexpected response from browser");
+  }
+
+  return Status(kOk);
+}
 
 Status InitSessionHelper(
     const InitSessionParams& bound_params,
@@ -120,22 +155,29 @@ Status InitSessionHelper(
 
   // Create Log's and DevToolsEventListener's for ones that are DevTools-based.
   // Session will own the Log's, Xwalk will own the listeners.
+  // Also create |CommandListener|s for the appropriate logs.
   ScopedVector<DevToolsEventListener> devtools_event_listeners;
+  ScopedVector<CommandListener> command_listeners;
   status = CreateLogs(capabilities,
+                      session,
                       &session->devtools_logs,
-                      &devtools_event_listeners);
+                      &devtools_event_listeners,
+                      &command_listeners);
   if (status.IsError())
     return status;
-  VLOG(0) << "Session:: port is " << capabilities.device_bridge_port;
+  //VLOG(0) << "Session:: port is " << capabilities.device_bridge_port;
+
+  // |session| will own the |CommandListener|s.
+  session->command_listeners.swap(command_listeners);
 
   status = LaunchXwalk(bound_params.context_getter.get(),
-                       bound_params.socket_factory,
-                       bound_params.device_manager,
-                       bound_params.port_server,
-                       bound_params.port_manager,
-                       capabilities,
-                       devtools_event_listeners,
-                       &session->xwalk);
+                        bound_params.socket_factory,
+                        bound_params.device_manager,
+                        bound_params.port_server,
+                        bound_params.port_manager,
+                        capabilities,
+                        &devtools_event_listeners,
+                        &session->xwalk);
   if (status.IsError())
     return status;
 
@@ -151,7 +193,7 @@ Status InitSessionHelper(
   session->force_devtools_screenshot = capabilities.force_devtools_screenshot;
   session->capabilities = CreateCapabilities(session->xwalk.get());
   value->reset(session->capabilities->DeepCopy());
-  return Status(kOk);
+  return CheckSessionCreated(session);
 }
 
 }  // namespace
@@ -162,8 +204,11 @@ Status ExecuteInitSession(
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
   Status status = InitSessionHelper(bound_params, session, params, value);
-  if (status.IsError())
+  if (status.IsError()) {
     session->quit = true;
+    if (session->xwalk != NULL)
+      session->xwalk->Quit();
+  }
   return status;
 }
 
@@ -191,7 +236,7 @@ Status ExecuteGetCurrentWindowHandle(
     Session* session,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  WebView* web_view = nullptr;
+  WebView* web_view = NULL;
   Status status = session->GetTargetWindow(&web_view);
   if (status.IsError())
     return status;
@@ -199,6 +244,27 @@ Status ExecuteGetCurrentWindowHandle(
   value->reset(
       new base::StringValue(WebViewIdToWindowHandle(web_view->GetId())));
   return Status(kOk);
+}
+
+Status ExecuteLaunchApp(
+    Session* session,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value) {
+  std::string id;
+  if (!params.GetString("id", &id))
+    return Status(kUnknownError, "'id' must be a string");
+
+  XwalkDesktopImpl* desktop = NULL;
+  Status status = session->xwalk->GetAsDesktop(&desktop);
+  if (status.IsError())
+    return status;
+
+  AutomationExtension* extension = NULL;
+  status = desktop->GetAutomationExtension(&extension);
+  if (status.IsError())
+    return status;
+
+  return extension->LaunchApp(id);
 }
 
 Status ExecuteClose(
@@ -212,7 +278,7 @@ Status ExecuteClose(
   bool is_last_web_view = web_view_ids.size() == 1u;
   web_view_ids.clear();
 
-  WebView* web_view = nullptr;
+  WebView* web_view = NULL;
   status = session->GetTargetWindow(&web_view);
   if (status.IsError())
     return status;
@@ -254,8 +320,8 @@ Status ExecuteSwitchToWindow(
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
   std::string name;
-  if (!params.GetString("name", &name) || name.empty())
-    return Status(kUnknownError, "'name' must be a nonempty string");
+  if (!params.GetString("name", &name))
+    return Status(kUnknownError, "'name' must be a string");
 
   std::list<std::string> web_view_ids;
   Status status = session->xwalk->GetWebViewIds(&web_view_ids);
@@ -307,13 +373,27 @@ Status ExecuteSwitchToWindow(
 
   if (session->overridden_geoposition) {
     WebView* web_view;
-    status = session->xwalk->GetWebViewById(web_view_id, &web_view);
+    Status status = session->xwalk->GetWebViewById(web_view_id, &web_view);
     if (status.IsError())
       return status;
     status = web_view->ConnectIfNecessary();
     if (status.IsError())
       return status;
     status = web_view->OverrideGeolocation(*session->overridden_geoposition);
+    if (status.IsError())
+      return status;
+  }
+
+  if (session->overridden_network_conditions) {
+    WebView* web_view;
+    Status status = session->xwalk->GetWebViewById(web_view_id, &web_view);
+    if (status.IsError())
+      return status;
+    status = web_view->ConnectIfNecessary();
+    if (status.IsError())
+      return status;
+    status = web_view->OverrideNetworkConditions(
+        *session->overridden_network_conditions);
     if (status.IsError())
       return status;
   }
@@ -381,7 +461,7 @@ Status ExecuteIsLoading(
     Session* session,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  WebView* web_view = nullptr;
+  WebView* web_view = NULL;
   Status status = session->GetTargetWindow(&web_view);
   if (status.IsError())
     return status;
@@ -418,33 +498,52 @@ Status ExecuteGetLocation(
   return Status(kOk);
 }
 
+Status ExecuteGetNetworkConditions(
+    Session* session,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value) {
+  if (!session->overridden_network_conditions) {
+    return Status(kUnknownError,
+                  "network conditions must be set before it can be retrieved");
+  }
+  base::DictionaryValue conditions;
+  conditions.SetBoolean("offline",
+                        session->overridden_network_conditions->offline);
+  conditions.SetInteger("latency",
+                        session->overridden_network_conditions->latency);
+  conditions.SetInteger(
+      "download_throughput",
+      session->overridden_network_conditions->download_throughput);
+  conditions.SetInteger(
+      "upload_throughput",
+      session->overridden_network_conditions->upload_throughput);
+  value->reset(conditions.DeepCopy());
+  return Status(kOk);
+}
+
 Status ExecuteGetWindowPosition(
     Session* session,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  WebView* web_view = nullptr;
-  Status status = session->GetTargetWindow(&web_view);
+  XwalkDesktopImpl* desktop = NULL;
+  Status status = session->xwalk->GetAsDesktop(&desktop);
   if (status.IsError())
     return status;
 
-  status = web_view->ConnectIfNecessary();
+  AutomationExtension* extension = NULL;
+  status = desktop->GetAutomationExtension(&extension);
   if (status.IsError())
     return status;
 
-  base::ListValue args;
-  const char* kGetWindowPositionScript =
-      "function() {"
-      "  var position = {'x':0, 'y':0};"
-      "  position.x = window.screenX;"
-      "  position.y = window.screenY;"
-      "  return position;"
-      "}";
-
-  status = web_view->CallFunction(session->GetCurrentFrameId(),
-                                  kGetWindowPositionScript, args, value);
+  int x, y;
+  status = extension->GetWindowPosition(&x, &y);
   if (status.IsError())
     return status;
 
+  base::DictionaryValue position;
+  position.SetInteger("x", x);
+  position.SetInteger("y", y);
+  value->reset(position.DeepCopy());
   return Status(kOk);
 }
 
@@ -452,42 +551,47 @@ Status ExecuteSetWindowPosition(
     Session* session,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  (void) session;
-  (void) params;
-  (void) value;
+  double x = 0;
+  double y = 0;
+  if (!params.GetDouble("x", &x) || !params.GetDouble("y", &y))
+    return Status(kUnknownError, "missing or invalid 'x' or 'y'");
 
-  // TODO(Peter Wang): Implement "set position" of xwalk window.
+  XwalkDesktopImpl* desktop = NULL;
+  Status status = session->xwalk->GetAsDesktop(&desktop);
+  if (status.IsError())
+    return status;
 
-  return Status(kOk);
+  AutomationExtension* extension = NULL;
+  status = desktop->GetAutomationExtension(&extension);
+  if (status.IsError())
+    return status;
+
+  return extension->SetWindowPosition(static_cast<int>(x), static_cast<int>(y));
 }
 
 Status ExecuteGetWindowSize(
     Session* session,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  WebView* web_view = nullptr;
-  Status status = session->GetTargetWindow(&web_view);
+  XwalkDesktopImpl* desktop = NULL;
+  Status status = session->xwalk->GetAsDesktop(&desktop);
   if (status.IsError())
     return status;
 
-  status = web_view->ConnectIfNecessary();
+  AutomationExtension* extension = NULL;
+  status = desktop->GetAutomationExtension(&extension);
   if (status.IsError())
     return status;
 
-  base::ListValue args;
-  const char* kGetWindowSizeScript =
-      "function() {"
-      "  var size = {'height':0, 'width':0};"
-      "  size.height = window.screen.height;"
-      "  size.width = window.screen.width;"
-      "  return size;"
-      "}";
-
-  status = web_view->CallFunction(session->GetCurrentFrameId(),
-                                  kGetWindowSizeScript, args, value);
+  int width, height;
+  status = extension->GetWindowSize(&width, &height);
   if (status.IsError())
     return status;
 
+  base::DictionaryValue size;
+  size.SetInteger("width", width);
+  size.SetInteger("height", height);
+  value->reset(size.DeepCopy());
   return Status(kOk);
 }
 
@@ -495,26 +599,41 @@ Status ExecuteSetWindowSize(
     Session* session,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  (void) session;
-  (void) params;
-  (void) value;
+  double width = 0;
+  double height = 0;
+  if (!params.GetDouble("width", &width) ||
+      !params.GetDouble("height", &height))
+    return Status(kUnknownError, "missing or invalid 'width' or 'height'");
 
-  // TODO(Peter Wang): Implement "set size" of xwalk window.
+  XwalkDesktopImpl* desktop = NULL;
+  Status status = session->xwalk->GetAsDesktop(&desktop);
+  if (status.IsError())
+    return status;
 
-  return Status(kOk);
+  AutomationExtension* extension = NULL;
+  status = desktop->GetAutomationExtension(&extension);
+  if (status.IsError())
+    return status;
+
+  return extension->SetWindowSize(
+      static_cast<int>(width), static_cast<int>(height));
 }
 
 Status ExecuteMaximizeWindow(
     Session* session,
     const base::DictionaryValue& params,
     scoped_ptr<base::Value>* value) {
-  (void) session;
-  (void) params;
-  (void) value;
+  XwalkDesktopImpl* desktop = NULL;
+  Status status = session->xwalk->GetAsDesktop(&desktop);
+  if (status.IsError())
+    return status;
 
-  // TODO(Peter Wang): Implement maximization of xwalk window.
+  AutomationExtension* extension = NULL;
+  status = desktop->GetAutomationExtension(&extension);
+  if (status.IsError())
+    return status;
 
-  return Status(kOk);
+  return extension->MaximizeWindow();
 }
 
 Status ExecuteGetAvailableLogTypes(
@@ -528,7 +647,7 @@ Status ExecuteGetAvailableLogTypes(
        ++log) {
     types->AppendString((*log)->type());
   }
-  *value = types.Pass();
+  *value = std::move(types);
   return Status(kOk);
 }
 
@@ -568,8 +687,9 @@ Status ExecuteUploadFile(
       return Status(kUnknownError, "unable to create temp dir");
   }
   base::FilePath upload_dir;
-  if (!base::CreateTemporaryDirInDir(
-          session->temp_dir.path(), FILE_PATH_LITERAL("upload"), &upload_dir)) {
+  if (!base::CreateTemporaryDirInDir(session->temp_dir.path(),
+                                     FILE_PATH_LITERAL("upload"),
+                                     &upload_dir)) {
     return Status(kUnknownError, "unable to create temp dir");
   }
   std::string error_msg;
@@ -613,5 +733,24 @@ Status ExecuteGetBrowserOrientation(
     return Status(kUnknownError, "failed to get browser orientation");
 
   value->reset(new base::StringValue(orientation));
+  return Status(kOk);
+}
+
+Status ExecuteIsAutoReporting(
+    Session* session,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value) {
+  value->reset(new base::FundamentalValue(session->auto_reporting_enabled));
+  return Status(kOk);
+}
+
+Status ExecuteSetAutoReporting(
+    Session* session,
+    const base::DictionaryValue& params,
+    scoped_ptr<base::Value>* value) {
+  bool enabled;
+  if (!params.GetBoolean("enabled", &enabled))
+    return Status(kUnknownError, "missing parameter 'enabled'");
+  session->auto_reporting_enabled = enabled;
   return Status(kOk);
 }

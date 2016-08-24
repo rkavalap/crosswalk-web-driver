@@ -13,33 +13,106 @@
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "base/strings/string_util.h"
-#include "xwalk/test/xwalkdriver/xwalk/adb_impl.h"
-#include "xwalk/test/xwalkdriver/xwalk/android_device.h"
-#include "xwalk/test/xwalkdriver/xwalk/device.h"
-#include "xwalk/test/xwalkdriver/xwalk/device_bridge.h"
-#include "xwalk/test/xwalkdriver/xwalk/sdb_impl.h"
+#include "xwalk/test/xwalkdriver/xwalk/adb.h"
 #include "xwalk/test/xwalkdriver/xwalk/status.h"
-#include "xwalk/test/xwalkdriver/xwalk/tizen_device.h"
 
-DeviceManager::DeviceManager(
-    const scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
-    int port,
-    int device_type) {
-  if (device_type == internal::kAndroid)
-    device_bridge_.reset(new AdbImpl(io_task_runner, port));
-  else if (device_type == internal::kTizen)
-    device_bridge_.reset(new SdbImpl(io_task_runner, port));
-  else
-    ;
-  CHECK(device_bridge_);
+Device::Device(
+    const std::string& device_serial, Adb* adb,
+    base::Callback<void()> release_callback)
+    : serial_(device_serial),
+      adb_(adb),
+      release_callback_(release_callback) {}
+
+Device::~Device() {
+  release_callback_.Run();
+}
+
+Status Device::SetUp(const std::string& package,
+                     const std::string& activity,
+                     const std::string& process,
+                     const std::string& args,
+                     bool use_running_app,
+                     int port) {
+  if (!active_package_.empty())
+    return Status(kUnknownError,
+        active_package_ + " was launched and has not been quit");
+
+  Status status = adb_->CheckAppInstalled(serial_, package);
+  if (status.IsError())
+    return status;
+
+  std::string known_activity;
+  std::string command_line_file;
+  std::string device_socket;
+  std::string exec_name;
+
+  if (!use_running_app) {
+    status = adb_->ClearAppData(serial_, package);
+    if (status.IsError())
+      return status;
+
+    if (!command_line_file.empty()) {
+        status = adb_->SetCommandLineFile(
+            serial_, command_line_file, exec_name, args);
+        if (status.IsError())
+          return status;
+    }
+
+    status = adb_->Launch(serial_, package,
+                          known_activity.empty() ? activity : known_activity);
+    if (status.IsError())
+      return status;
+
+    active_package_ = package;
+  }
+  this->ForwardDevtoolsPort(package, process, port, &device_socket);
+
+  return status;
+}
+
+Status Device::ForwardDevtoolsPort(const std::string& package,
+                                   const std::string& process,
+                                   int port,
+                                   std::string* device_socket) {
+    // Assume this is a WebView app.
+    int pid;
+    Status status = adb_->GetPidByName(serial_,
+                                       process.empty() ? package : process,
+                                       &pid);
+    if (status.IsError()) {
+      if (process.empty())
+        status.AddDetails(
+            "process name must be specified if not equal to package name");
+      return status;
+    }
+    
+    std::string remote_abstract;
+    remote_abstract = base::StringPrintf("%s_devtools_remote", package.c_str());
+    VLOG(0) << "Device socket is: " + remote_abstract;
+
+  return adb_->ForwardPort(serial_, port, remote_abstract);
+}
+
+Status Device::TearDown() {
+  if (!active_package_.empty()) {
+    std::string response;
+    Status status = adb_->ForceStop(serial_, active_package_);
+    if (status.IsError())
+      return status;
+    active_package_ = "";
+  }
+  return Status(kOk);
+}
+
+DeviceManager::DeviceManager(Adb* adb) : adb_(adb) {
+  CHECK(adb_);
 }
 
 DeviceManager::~DeviceManager() {}
 
 Status DeviceManager::AcquireDevice(scoped_ptr<Device>* device) {
   std::vector<std::string> devices;
-  Status status = device_bridge_.get()->GetDevices(&devices);
+  Status status = adb_->GetDevices(&devices);
   if (status.IsError())
     return status;
 
@@ -48,15 +121,10 @@ Status DeviceManager::AcquireDevice(scoped_ptr<Device>* device) {
 
   base::AutoLock lock(devices_lock_);
   status = Status(kUnknownError, "All devices are in use (" +
-                  base::IntToString(devices.size()) + " online)");
+                  base::SizeTToString(devices.size()) + " online)");
   std::vector<std::string>::iterator iter;
   for (iter = devices.begin(); iter != devices.end(); iter++) {
-    if (IsDeviceLocked(*iter)) {
-      active_devices_.remove(*iter);
-      device->reset(LockDevice(*iter));
-      status = Status(kOk);
-      break;
-    } else {
+    if (!IsDeviceLocked(*iter)) {
       device->reset(LockDevice(*iter));
       status = Status(kOk);
       break;
@@ -68,28 +136,24 @@ Status DeviceManager::AcquireDevice(scoped_ptr<Device>* device) {
 Status DeviceManager::AcquireSpecificDevice(
     const std::string& device_serial, scoped_ptr<Device>* device) {
   std::vector<std::string> devices;
-  Status status = device_bridge_.get()->GetDevices(&devices);
+  Status status = adb_->GetDevices(&devices);
   if (status.IsError())
     return status;
 
-  for (std::vector<std::string>::const_iterator iter = devices.begin();
-       iter != devices.end(); ++iter) {
-    if ((*iter).find(device_serial) != std::string::npos) {
-      base::AutoLock lock(devices_lock_);
-      if (IsDeviceLocked(*iter)) {
-        // since we add authorization for connecting xwalkdriver by 
-        // whitelisted-ips now, we make it possible to relaunch the running
-        // app by authorized developers who should take care of it and make
-        // their own decisions whether the running app can be interruptable.
-        active_devices_.remove(*iter);
-      }
-      device->reset(LockDevice(*iter));
-      return Status(kOk);
-    }
-  }    
-  
-   VLOG(0) << "AcquireSpecificDevice::::::::  is not online   " << device_serial;
-  return Status(kUnknownError, "Device " + device_serial + " is not online");
+  if (std::find(devices.begin(), devices.end(), device_serial) == devices.end()) {
+    VLOG(0) << "AcquireSpecificDevice::::::::  is not online   " << device_serial;    
+    return Status(kUnknownError, "Device " + device_serial + " is not online");
+  }
+
+  base::AutoLock lock(devices_lock_);
+  if (IsDeviceLocked(device_serial)) {
+    status = Status(kUnknownError,
+        "Device " + device_serial + " is already in use");
+  } else {
+    device->reset(LockDevice(device_serial));
+    status = Status(kOk);
+  }
+  return status;
 }
 
 void DeviceManager::ReleaseDevice(const std::string& device_serial) {
@@ -99,21 +163,12 @@ void DeviceManager::ReleaseDevice(const std::string& device_serial) {
 
 Device* DeviceManager::LockDevice(const std::string& device_serial) {
   active_devices_.push_back(device_serial);
-  std::string os_name = base::ToLowerASCII(
-                            device_bridge_.get()->GetOperatingSystemName());
-
-  if (os_name.find("android") != std::string::npos)
-    return new AndroidDevice(device_serial, device_bridge_.get(),
-        base::Bind(&DeviceManager::ReleaseDevice, base::Unretained(this),
-                   device_serial));
-  else
-    return new TizenDevice(device_serial, device_bridge_.get(),
-        base::Bind(&DeviceManager::ReleaseDevice, base::Unretained(this),
-                   device_serial));
+  return new Device(device_serial, adb_,
+      base::Bind(&DeviceManager::ReleaseDevice, base::Unretained(this),
+                 device_serial));
 }
 
 bool DeviceManager::IsDeviceLocked(const std::string& device_serial) {
   return std::find(active_devices_.begin(), active_devices_.end(),
                    device_serial) != active_devices_.end();
 }
-

@@ -60,53 +60,5 @@ capabilities = {
 >>> driver.save_screenshot("screenshot.png")
 >>> driver.quit()
 
-    
-For Tizen xwalk:
-(1) Check status of sdbd_tcp.service on Tizen IVI, start it if neecessary:
-systemctl status sdbd_tcp
-systemctl start sdbd_tcp
-
-(2) Connect Tizen IVI and PC with sdb
-    a). Run the command on PC: han@hanlab:~$ sdb connect <tizen ivi ip>
-    b). Run the command on PC: han@hanlab:~$ sdb root on
-    c). Run the command on PC: han@hanlab:~$ sdb push webapi.xpk /home/app
-
-(3) Install and launch the xwalk as server mode on Tizen IVI:
-su - app
-systemctl --user status xwalk
-pkgcmd -i -t xpk -q -p /home/app/webapi.xpk
-
-(4) Set remote debug port by insert "--remote-debugging-port='PORT'" into "/usr/lib/systemd/user/xwalk.service" on Tizen IVI.
-
-(5) Restart the xwalk.service on Tizen IVI:
-systemctl --user daemon-reload
-systemctl --user restart xwalk
-
-(6) If Selenium package not installed on PC. Install Selenium package by executing command
-    apt-get install python-pip && pip install selenium
-
-(7) Run xwalkdriver binary on PC with command:
-    $./xwalkdriver
-    If xwalkdriver runs on a remote server, you can authorize security clients on where
-test suit executes by white-list-ip like this.
-    $./xwalkdriver --whitelisted-ips=client-ip;
-
-(8) Execute following commands to test(Note to replace your tizen application Id):
-$ python
->>> from selenium import webdriver
->>> 
-capabilities = {
-  'xwalkOptions': {
-    'tizenDebuggerAddress': '10.238.158.97:9333',
-    'tizenAppId': 'xwalk.ihogjblnkegkonaaaddobhoncmdpbomi',
-    'sdb-port': 26099(default option if not selected),
-  }
-}
-
->>> driver = webdriver.Remote('http://localhost:9515', capabilities)
->>> driver.title
->>> driver.save_screenshot("screenshottest.png")
->>> driver.quit()
-
 
  

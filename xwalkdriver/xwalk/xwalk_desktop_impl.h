@@ -18,6 +18,8 @@ namespace base {
 class TimeDelta;
 }
 
+class AutomationExtension;
+class DevToolsClient;
 class DevToolsHttpClient;
 class Status;
 class WebView;
@@ -25,11 +27,13 @@ class WebView;
 class XwalkDesktopImpl : public XwalkImpl {
  public:
   XwalkDesktopImpl(
-      scoped_ptr<DevToolsHttpClient> client,
+      scoped_ptr<DevToolsHttpClient> http_client,
+      scoped_ptr<DevToolsClient> websocket_client,
       ScopedVector<DevToolsEventListener>& devtools_event_listeners,
       scoped_ptr<PortReservation> port_reservation,
       base::Process process,
       const base::CommandLine& command,
+      base::ScopedTempDir* user_data_dir,
       base::ScopedTempDir* extension_dir);
   ~XwalkDesktopImpl() override;
 
@@ -39,11 +43,16 @@ class XwalkDesktopImpl : public XwalkImpl {
                            const base::TimeDelta& timeout,
                            scoped_ptr<WebView>* web_view);
 
+  // Gets the installed automation extension.
+  Status GetAutomationExtension(AutomationExtension** extension);
+
   // Overridden from Xwalk
-  XwalkDesktopImpl* GetAsDesktop() override;
+  Status GetAsDesktop(XwalkDesktopImpl** desktop) override;
   std::string GetOperatingSystemName() override;
 
   // Overridden from XwalkImpl:
+  bool IsMobileEmulationEnabled() const override;
+  bool HasTouchScreen() const override;
   Status QuitImpl() override;
 
   const base::CommandLine& command() const;
@@ -51,7 +60,11 @@ class XwalkDesktopImpl : public XwalkImpl {
  private:
   base::Process process_;
   base::CommandLine command_;
+  base::ScopedTempDir user_data_dir_;
   base::ScopedTempDir extension_dir_;
+
+  // Lazily initialized, may be null.
+  scoped_ptr<AutomationExtension> automation_extension_;
 };
 
 #endif  // XWALK_TEST_XWALKDRIVER_XWALK_XWALK_DESKTOP_IMPL_H_
